@@ -1,0 +1,5 @@
+{
+  "editor.formatOnSave": true,
+  "solidity.formatter": "forge",
+  "terminal.integrated.scrollback": 4000
+}

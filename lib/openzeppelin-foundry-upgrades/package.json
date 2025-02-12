@@ -1,0 +1,23 @@
+{
+  "name": "openzeppelin-foundry-upgrades",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "clean": "forge clean",
+    "compile": "forge build",
+    "forge:script": "forge script test/Upgrades.s.sol --ffi",
+    "forge:test": "forge test -vvv --ffi",
+    "lint": "prettier --log-level warn --ignore-path .gitignore '{src,test}/**/*.sol' --check && solhint 'src/**/*.sol'",
+    "lint:fix": "prettier --log-level warn --ignore-path .gitignore '{src,test}/**/*.sol' --write",
+    "test": "npm run forge:test && npm run forge:script"
+  },
+  "devDependencies": {
+    "@openzeppelin/contracts": "^5.0.0",
+    "@openzeppelin/defender-deploy-client-cli": "0.0.1-alpha.4",
+    "@openzeppelin/upgrades-core": "^1.32.3",
+    "prettier": "^3.0.0",
+    "prettier-plugin-solidity": "^1.1.0",
+    "solhint": "^3.3.6",
+    "solhint-plugin-openzeppelin": "file:scripts/solhint-custom"
+  }
+}
