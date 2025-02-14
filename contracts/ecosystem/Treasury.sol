@@ -67,9 +67,7 @@ contract Treasury is
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
         if (guardian != address(0x0) && timelock != address(0x0)) {
-            require(guardian != address(0x0), "ZERO_ADDRESS");
             _grantRole(DEFAULT_ADMIN_ROLE, guardian);
-            require(timelock != address(0x0), "ZERO_ADDRESS");
             _grantRole(MANAGER_ROLE, timelock);
 
             _start = SafeCast.toUint64(block.timestamp - 219 days);
