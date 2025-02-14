@@ -55,7 +55,7 @@ contract TeamManager is
     }
 
     /**
-     * @dev Initializes the this contract
+     * @dev Initializes this contract
      * @param token ecosystem token address
      * @param timelock_ timelock address
      * @param guardian guardian address
