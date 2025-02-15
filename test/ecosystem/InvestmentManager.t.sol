@@ -49,7 +49,8 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_Revert_Initialize() public {
+    // Test: RevertInitialize
+    function testRevertInitialize() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
@@ -62,7 +63,8 @@ contract InvestmentManagerTest is BasicDeploy {
         );
     }
 
-    function test_Pause() public {
+    // Test: Pause
+    function testPause() public {
         assertEq(imInstance.paused(), false);
         vm.startPrank(guardian);
         imInstance.pause();
@@ -72,11 +74,13 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_createRound() public {
+    // Test: CreateRound
+    function testCreateRound() public {
         createRound(100 ether, 500_000 ether);
     }
 
-    function test_addInvestorAllocation() public {
+    // Test: AddInvestorAllocation
+    function testAddInvestorAllocation() public {
         createRound(100 ether, 500_000 ether);
         vm.prank(guardian);
         imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
@@ -85,7 +89,8 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(investment.tokenAmount, 50_000 ether);
     }
 
-    function test_investEth() public returns (bool success) {
+    // Test: InvestEth
+    function testInvestEth() public returns (bool success) {
         createRound(100 ether, 500_000 ether);
         vm.prank(guardian);
         imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
@@ -101,7 +106,8 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(roundInfo.participants, 1);
     }
 
-    function test_investWETH() public returns (bool success) {
+    // Test: InvestWETH
+    function testInvestWETH() public returns (bool success) {
         createRound(100 ether, 500_000 ether);
         vm.prank(guardian);
         imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
@@ -119,7 +125,8 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(roundInfo.participants, 1);
     }
 
-    function test_cancelInvestment() public returns (bool success) {
+    // Test: CancelInvestment
+    function testCancelInvestment() public returns (bool success) {
         createRound(100 ether, 500_000 ether);
         vm.prank(guardian);
         imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
@@ -145,7 +152,8 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(roundInfo.participants, 0);
     }
 
-    function test_Revert_cancelRound_Branch1() public returns (bool success) {
+    // Test: RevertCancelRoundBranch1
+    function testRevertCancelRoundBranch1() public returns (bool success) {
         createRound(100 ether, 500_000 ether);
         vm.prank(guardian);
         imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
@@ -166,7 +174,8 @@ contract InvestmentManagerTest is BasicDeploy {
         imInstance.cancelRound(0);
     }
 
-    function test_Revert_cancelRound_Branch2() public returns (bool success) {
+    // Test: RevertCancelRoundBranch2
+    function testRevertCancelRoundBranch2() public returns (bool success) {
         createRound(100 ether, 500_000 ether);
         vm.prank(guardian);
         imInstance.addInvestorAllocation(0, alice, 100 ether, 500_000 ether);
@@ -187,7 +196,8 @@ contract InvestmentManagerTest is BasicDeploy {
         imInstance.cancelRound(0);
     }
 
-    function test_Revert_cancelRound_Branch3() public returns (bool success) {
+    // Test: RevertCancelRoundBranch3
+    function testRevertCancelRoundBranch3() public returns (bool success) {
         createRound(100 ether, 500_000 ether);
         uint256 amount = 10 ether;
         vm.prank(guardian);
@@ -208,7 +218,8 @@ contract InvestmentManagerTest is BasicDeploy {
         imInstance.cancelRound(0);
     }
 
-    function test_cancelRound() public returns (bool success) {
+    // Test: CancelRound
+    function testCancelRound() public returns (bool success) {
         uint256 raiseAmount = 100 ether;
         uint256 roundAllocation = 500_000 ether;
         createRound(raiseAmount, roundAllocation);
