@@ -74,9 +74,54 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.stopPrank();
     }
 
+    // Test: RevertPauseBranch1
+    function testRevertPauseBranch1() public {
+        vm.prank(guardian);
+        imInstance.pause();
+        assertTrue(imInstance.paused());
+
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.prank(alice);
+        vm.expectRevert(expError); // contract paused
+        imInstance.investEther(0);
+    }
+
     // Test: CreateRound
     function testCreateRound() public {
         createRound(100 ether, 500_000 ether);
+    }
+
+    // Test: CloseRound
+    function testCloseRound() public {
+        // Setup round
+        createRound(100 ether, 1000 ether);
+
+        // Setup allocations
+        vm.startPrank(guardian);
+        imInstance.addInvestorAllocation(0, alice, 50 ether, 500 ether);
+        imInstance.addInvestorAllocation(0, bob, 50 ether, 500 ether);
+        vm.stopPrank();
+
+        // Investments
+        vm.deal(alice, 100 ether);
+        vm.deal(bob, 100 ether);
+        vm.startPrank(alice);
+        wethInstance.deposit{value: 50 ether}();
+        IERC20(address(wethInstance)).approve(address(imInstance), 50 ether);
+        imInstance.investWETH(0, 50 ether);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        wethInstance.deposit{value: 50 ether}();
+        IERC20(address(wethInstance)).approve(address(imInstance), 50 ether);
+        imInstance.investWETH(0, 50 ether);
+        vm.stopPrank();
+
+        uint256 treasuryBalanceBefore = address(treasuryInstance).balance;
+        imInstance.closeRound(0);
+        uint256 treasuryBalanceAfter = address(treasuryInstance).balance;
+
+        assertEq(treasuryBalanceAfter - treasuryBalanceBefore, 100 ether);
     }
 
     // Test: AddInvestorAllocation
@@ -123,6 +168,27 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(roundInfo.tokenAllocation, 500_000 ether);
         assertEq(roundInfo.etherInvested, 10 ether);
         assertEq(roundInfo.participants, 1);
+    }
+
+    // Test: RevertInvestWETHBranch1
+    function testRevertInvestWETHBranch1() public returns (bool success) {
+        createRound(100 ether, 500_000 ether);
+        vm.prank(guardian);
+        imInstance.addInvestorAllocation(0, alice, 5 ether, 50_000 ether);
+        vm.deal(alice, 10 ether);
+        vm.startPrank(alice);
+        (success,) = payable(address(wethInstance)).call{value: 10 ether}("");
+        wethInstance.approve(address(imInstance), 10 ether);
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
+        vm.expectRevert(expError);
+        imInstance.investWETH(0, 10 ether);
+        vm.stopPrank();
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.etherTarget, 100 ether);
+        assertEq(roundInfo.tokenAllocation, 500_000 ether);
+        assertEq(roundInfo.etherInvested, 0 ether);
+        assertEq(roundInfo.participants, 0);
     }
 
     // Test: CancelInvestment
@@ -257,6 +323,29 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(imBal, roundAllocation);
         assertEq(aliceBal, amount);
         assertEq(balAfter, balBefore + roundAllocation);
+    }
+
+    function testFuzz_InvestmentAmount(uint256 amount) public {
+        vm.assume(amount > 0 && amount <= 100 ether);
+
+        // Setup round
+        createRound(100 ether, 1000 ether);
+
+        // Setup allocations
+        vm.startPrank(guardian);
+        imInstance.addInvestorAllocation(0, alice, amount, amount * 10);
+        vm.stopPrank();
+
+        // Invest
+        vm.deal(alice, 100 ether);
+        vm.startPrank(alice);
+        wethInstance.deposit{value: amount}();
+        IERC20(address(wethInstance)).approve(address(imInstance), amount);
+        imInstance.investWETH(0, amount);
+        vm.stopPrank();
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.etherInvested, amount);
     }
 
     function createRound(uint256 target, uint256 allocation) public {
