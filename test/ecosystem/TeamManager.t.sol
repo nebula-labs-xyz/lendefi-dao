@@ -3,7 +3,6 @@ pragma solidity ^0.8.23;
 
 import "../BasicDeploy.sol"; // solhint-disable-line
 import {TeamManager} from "../../contracts/ecosystem/TeamManager.sol";
-import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
 
 contract TeamManagerTest is BasicDeploy {
     uint256 internal vmprimer = 365 days;
@@ -36,19 +35,22 @@ contract TeamManagerTest is BasicDeploy {
         treasuryInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
     }
 
-    function test_Revert_Receive() public returns (bool success) {
+    //Test: RevertReceive
+    function testRevertReceive() public returns (bool success) {
         vm.expectRevert(); // contract does not receive ether
         (success,) = payable(address(tmInstance)).call{value: 100 ether}("");
     }
 
-    function test_Revert_Initialize() public {
+    //Test: RevertInitialize
+    function testRevertInitialize() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
         tmInstance.initialize(address(timelockInstance), address(timelockInstance), guardian);
     }
 
-    function test_Pause() public {
+    //Test: testPause
+    function testPause() public {
         vm.prank(guardian);
         tmInstance.grantRole(PAUSER_ROLE, pauser);
         assertEq(tmInstance.paused(), false);
@@ -60,7 +62,8 @@ contract TeamManagerTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_Revert_addTeamMember_Branch1() public {
+    //Test: RevertAddTeamMemberBranch2
+    function testRevertAddTeamMemberBranch1() public {
         bytes memory expError =
             abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", guardian, MANAGER_ROLE);
         vm.prank(guardian);
@@ -68,7 +71,8 @@ contract TeamManagerTest is BasicDeploy {
         tmInstance.addTeamMember(managerAdmin, 100 ether);
     }
 
-    function test_Revert_addTeamMember_Branch2() public {
+    //Test: RevertAddTeamMemberBranch2
+    function testRevertAddTeamMemberBranch2() public {
         assertEq(tmInstance.paused(), false);
         vm.prank(guardian);
         tmInstance.grantRole(PAUSER_ROLE, pauser);
@@ -82,14 +86,16 @@ contract TeamManagerTest is BasicDeploy {
         tmInstance.addTeamMember(managerAdmin, 100 ether);
     }
 
-    function test_Revert_addTeamMember_Branch3() public {
+    // Test: RevertAddTeamMemberBranch3
+    function testRevertAddTeamMemberBranch3() public {
         vm.prank(address(timelockInstance));
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "SUPPLY_LIMIT");
         vm.expectRevert(expError);
         tmInstance.addTeamMember(managerAdmin, 10_000_000 ether);
     }
 
-    function test_addTeamMember() public {
+    // Test: AddTeamMember
+    function testAddTeamMember() public {
         // execute a DAO proposal adding team member
         // get some tokens to vote with
         address[] memory winners = new address[](3);
