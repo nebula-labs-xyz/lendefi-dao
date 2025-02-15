@@ -70,8 +70,8 @@ contract Treasury is
             _grantRole(DEFAULT_ADMIN_ROLE, guardian);
             _grantRole(MANAGER_ROLE, timelock);
 
-            _start = SafeCast.toUint64(block.timestamp - 219 days);
-            _duration = SafeCast.toUint64(1095 days + 219 days);
+            _start = SafeCast.toUint64(block.timestamp - 180 days);
+            _duration = SafeCast.toUint64(1095 days - 180 days);
             version++;
             emit Initialized(msg.sender);
         } else {
