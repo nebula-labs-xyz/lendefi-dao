@@ -12,7 +12,7 @@
   "scripts": {
     "build": "forge clean && forge build",
     "build:optimized": "FOUNDRY_PROFILE=optimized forge build",
-    "coverage": "forge coverage --match-contract Unit",
+    "coverage": "forge coverage --ffi",
     "deploy:mainnet": "bash -c 'source .env && forge script Deploy --broadcast --chain mainnet --private-key $MAINNET_DEPLOYER_PK'",
     "deploy:sepolia": "bash -c 'source .env && forge script Deploy --broadcast --chain sepolia --private-key $SEPOLIA_DEPLOYER_PK'",
     "lint:check": "npm run lint:sol-tests && npm run lint:sol-logic && forge fmt --check",
@@ -21,11 +21,11 @@
     "lint:sol-logic": "solhint -c .solhint.json -f table 'contracts/ecosystem/*.sol' 'contracts/lender/*.sol' 'contracts/liquidator/*.sol' 'script/**/*.sol'",
     "lint:sol-tests": "solhint -c .solhint.tests.json -f table 'test/ecosystem/*.sol'",
     "prepare": "husky",
-    "slither:check": "slither contracts/ecosystem/InvestmentManager.sol --solc-remaps @openzeppelin/=$(pwd)/node_modules/@openzeppelin/ --filter-paths '@openzeppelin'",
+    "slither:check": "slither contracts/ecosystem/Ecosystem.sol --solc-remaps @openzeppelin/=$(pwd)/node_modules/@openzeppelin/ --filter-paths '@openzeppelin'",
     "solhint": "./node_modules/.bin/solhint -f table contracts/**/*.sol",
     "test": "forge test -vvv --ffi",
-    "test:integration": "forge test --match-contract Integration -vvv",
-    "test:unit": "forge test --match-contract Unit -vvv",
+    "test:integration": "forge test --match-contract Unit -vvv --ffi",
+    "test:unit": "forge test --match-contract Unit -vvv --ffi",
     "test:unit:deep": "FOUNDRY_FUZZ_RUNS=5000 npm run test:unit"
   },
   "lint-staged": {
