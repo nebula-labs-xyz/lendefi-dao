@@ -25,19 +25,22 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
     }
 
-    function test_Revert_Receive() public returns (bool success) {
+    // Test: RevertReceive
+    function testRevertReceive() public returns (bool success) {
         vm.expectRevert(); // contract does not receive ether
         (success,) = payable(address(ecoInstance)).call{value: 100 ether}("");
     }
 
-    function test_Revert_Initialization() public {
+    // Test: RevertInitialization
+    function testRevertInitialization() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
         ecoInstance.initialize(address(tokenInstance), guardian, pauser);
     }
 
-    function test_Pause() public {
+    // Test: Pause
+    function testPause() public {
         assertEq(ecoInstance.paused(), false);
         vm.startPrank(pauser);
         ecoInstance.pause();
@@ -47,7 +50,8 @@ contract EcosystemTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_Revert_Pause_Branch1() public {
+    // Test: RevertPauseBranch1
+    function testRevertPauseBranch1() public {
         assertEq(ecoInstance.paused(), false);
 
         bytes memory expError =
@@ -57,7 +61,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.pause();
     }
 
-    function test_Airdrop() public {
+    // Test: Airdrop
+    function testAirdrop() public {
         vm.deal(alice, 1 ether);
         vm.deal(bob, 1 ether);
         vm.deal(charlie, 1 ether);
@@ -78,7 +83,8 @@ contract EcosystemTest is BasicDeploy {
         }
     }
 
-    function test_Airdrop_GasLimit() public {
+    // Test: AirdropGasLimit
+    function testAirdropGasLimit() public {
         vm.deal(alice, 1 ether);
 
         address[] memory winners = new address[](4000);
@@ -92,7 +98,8 @@ contract EcosystemTest is BasicDeploy {
         assertEq(bal, 80000 ether);
     }
 
-    function test_Revert_Airdrop_Branch1() public {
+    // Test: RevertAirdropBranch1
+    function testRevertAirdropBranch1() public {
         address[] memory winners = new address[](3);
         winners[0] = alice;
         winners[1] = bob;
@@ -104,7 +111,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.airdrop(winners, 20 ether);
     }
 
-    function test_Revert_Airdrop_Branch2() public {
+    // Test: RevertAirdropBranch2
+    function testRevertAirdropBranch2() public {
         assertEq(ecoInstance.paused(), false);
         vm.prank(pauser);
         ecoInstance.pause();
@@ -119,19 +127,20 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.airdrop(winners, 20 ether);
     }
 
-    function test_Revert_Airdrop_Branch3() public {
+    // Test: RevertAirdropBranch3
+    function testRevertAirdropBranch3() public {
         address[] memory winners = new address[](5001);
         winners[0] = alice;
         winners[1] = bob;
         winners[2] = charlie;
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "GAS_LIMIT");
         vm.prank(managerAdmin);
-        // vm.expectRevert("GAS_LIMIT");
         vm.expectRevert(expError); // array too large
         ecoInstance.airdrop(winners, 1 ether);
     }
 
-    function test_Revert_Airdrop_Branch4() public {
+    // Test: RevertAirdropBranch4
+    function testRevertAirdropBranch4() public {
         address[] memory winners = new address[](3);
         winners[0] = alice;
         winners[1] = bob;
@@ -142,7 +151,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.airdrop(winners, 2_000_000 ether);
     }
 
-    function test_Reward() public {
+    // Test: Reward
+    function testReward() public {
         vm.prank(guardian);
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
         vm.startPrank(managerAdmin);
@@ -154,7 +164,8 @@ contract EcosystemTest is BasicDeploy {
         assertEq(bal, 20 ether);
     }
 
-    function test_Revert_Reward_Branch1() public {
+    // Test: RevertRewardBranch1
+    function testRevertRewardBranch1() public {
         uint256 maxReward = ecoInstance.maxReward();
         bytes memory expError =
             abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", guardian, REWARDER_ROLE);
@@ -163,7 +174,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.reward(assetRecipient, maxReward);
     }
 
-    function test_Revert_Reward_Branch2() public {
+    // Test: RevertRewardBranch2
+    function testRevertRewardBranch2() public {
         assertEq(ecoInstance.paused(), false);
         vm.prank(pauser);
         ecoInstance.pause();
@@ -176,7 +188,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.reward(assetRecipient, 1 ether);
     }
 
-    function test_Revert_Reward_Branch3() public {
+    // Test: RevertRewardBranch3
+    function testRevertRewardBranch3() public {
         vm.prank(guardian);
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
@@ -185,7 +198,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.reward(assetRecipient, 0);
     }
 
-    function test_Revert_Reward_Branch4() public {
+    // Test: RevertRewardBranch4
+    function testRevertRewardBranch4() public {
         vm.prank(guardian);
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
 
@@ -196,7 +210,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.reward(assetRecipient, maxReward + 1 ether);
     }
 
-    function test_Revert_Reward_Branch5() public {
+    // Test: RevertRewardBranch5
+    function testRevertRewardBranch5() public {
         vm.prank(guardian);
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
         uint256 maxReward = ecoInstance.maxReward();
@@ -210,7 +225,8 @@ contract EcosystemTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_Burn() public {
+    // Test: Burn
+    function testBurn() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
         uint256 startBal = tokenInstance.totalSupply();
@@ -223,7 +239,8 @@ contract EcosystemTest is BasicDeploy {
         assertEq(startBal, endBal + 20 ether);
     }
 
-    function test_Revert_Burn_Branch1() public {
+    // Test: RevertBurnBranch1
+    function testRevertBurnBranch1() public {
         bytes memory expError =
             abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", guardian, BURNER_ROLE);
         vm.prank(guardian);
@@ -231,7 +248,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.burn(1 ether);
     }
 
-    function test_Revert_Burn_Branch2() public {
+    // Test: RevertBurnBranch2
+    function testRevertBurnBranch2() public {
         assertEq(ecoInstance.paused(), false);
         vm.prank(pauser);
         ecoInstance.pause();
@@ -245,7 +263,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.burn(1 ether);
     }
 
-    function test_Revert_Burn_Branch3() public {
+    // Test: RevertBurnBranch3
+    function testRevertBurnBranch3() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
@@ -254,7 +273,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.burn(0);
     }
 
-    function test_Revert_Burn_Branch4() public {
+    // Test: RevertBurnBranch4
+    function testRevertBurnBranch4() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "BURN_SUPPLY_LIMIT");
@@ -266,7 +286,8 @@ contract EcosystemTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_Revert_Burn_Branch5() public {
+    // Test: RevertBurnBranch5
+    function testRevertBurnBranch5() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
         uint256 amount = ecoInstance.maxBurn();
@@ -276,7 +297,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.burn(amount + 1 ether);
     }
 
-    function test_AddPartner() public {
+    // Test: AddPartner
+    function testAddPartner() public {
         uint256 vmprimer = 365 days;
         vm.warp(vmprimer);
         uint256 supply = ecoInstance.partnershipSupply();
@@ -288,7 +310,8 @@ contract EcosystemTest is BasicDeploy {
         assertEq(bal, amount);
     }
 
-    function test_Revert_AddPartner_Branch1() public {
+    // Test: RevertAddPartnerBranch1
+    function testRevertAddPartnerBranch1() public {
         bytes memory expError =
             abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", pauser, MANAGER_ROLE);
         uint256 supply = ecoInstance.partnershipSupply();
@@ -299,7 +322,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.addPartner(partner, amount);
     }
 
-    function test_Revert_AddPartner_Branch2() public {
+    // Test: RevertAddPartnerBranch2
+    function testRevertAddPartnerBranch2() public {
         assertEq(ecoInstance.paused(), false);
         vm.prank(pauser);
         ecoInstance.pause();
@@ -310,14 +334,16 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.addPartner(partner, 100 ether);
     }
 
-    function test_Revert_AddPartner_Branch3() public {
+    // Test: RevertAddPartnerBranch3
+    function testRevertAddPartnerBranch3() public {
         vm.prank(managerAdmin);
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ADDRESS");
         vm.expectRevert(expError);
         ecoInstance.addPartner(address(0), 100 ether);
     }
 
-    function test_Revert_AddPartner_Branch4() public {
+    // Test: RevertAddPartnerBranch4
+    function testRevertAddPartnerBranch4() public {
         uint256 supply = ecoInstance.partnershipSupply();
         uint256 amount = supply / 4;
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "PARTNER_EXISTS");
@@ -328,7 +354,8 @@ contract EcosystemTest is BasicDeploy {
         vm.stopPrank();
     }
 
-    function test_Revert_AddPartner_Branch5() public {
+    // Test: RevertAddPartnerBranch5
+    function testRevertAddPartnerBranch5() public {
         uint256 supply = ecoInstance.partnershipSupply();
         uint256 amount = supply / 2;
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
@@ -337,14 +364,16 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.addPartner(partner, amount + 1 ether);
     }
 
-    function test_Revert_AddPartner_Branch6() public {
+    // Test: RevertAddPartnerBranch6
+    function testRevertAddPartnerBranch6() public {
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
         vm.prank(managerAdmin);
         vm.expectRevert(expError);
         ecoInstance.addPartner(partner, 50 ether);
     }
 
-    function test_Revert_AddPartner_Branch7() public {
+    // Test: RevertAddPartnerBranch7
+    function testRevertAddPartnerBranch7() public {
         uint256 supply = ecoInstance.partnershipSupply();
         uint256 amount = supply / 2;
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "AMOUNT_EXCEEDS_SUPPLY");
