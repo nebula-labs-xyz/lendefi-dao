@@ -1,12 +1,62 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import {BasicDeploy} from "../BasicDeploy.sol";
-import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
+import "../BasicDeploy.sol"; // solhint-disable-line
+import {LendefiGovernor} from "../../contracts/ecosystem/LendefiGovernor.sol"; // Path to your contract
 
-contract YodaGovernorTest is BasicDeploy {
+contract LendefiGovernorTest is BasicDeploy {
+    // Set up initial conditions before each test
     function setUp() public {
-        deployComplete();
+        vm.warp(365 days);
+        // token deploy
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
+        tokenInstance = GovernanceToken(proxy);
+        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(tokenInstance) == tokenImplementation);
+
+        // ecosystem deploy
+        bytes memory data1 = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
+        address payable proxy1 = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data1));
+        ecoInstance = Ecosystem(proxy1);
+        address ecoImplementation = Upgrades.getImplementationAddress(proxy1);
+        assertFalse(address(ecoInstance) == ecoImplementation);
+
+        // timelock deploy
+        uint256 timelockDelay = 24 * 60 * 60;
+        address[] memory temp = new address[](1);
+        temp[0] = ethereum;
+        bytes memory data2 = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
+        address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data2));
+        timelockInstance = LendefiTimelock(proxy2);
+        address tlImplementation = Upgrades.getImplementationAddress(proxy2);
+        assertFalse(address(timelockInstance) == tlImplementation);
+
+        // governor deploy
+        bytes memory data3 = abi.encodeCall(
+            LendefiGovernor.initialize, (tokenInstance, TimelockControllerUpgradeable(payable(proxy2)), guardian)
+        );
+        address payable proxy3 = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data3));
+        govInstance = LendefiGovernor(proxy3);
+        address govImplementation = Upgrades.getImplementationAddress(proxy3);
+        assertFalse(address(govInstance) == govImplementation);
+
+        // reset timelock proposers and executors
+        vm.startPrank(guardian);
+        timelockInstance.revokeRole(PROPOSER_ROLE, ethereum);
+        timelockInstance.revokeRole(EXECUTOR_ROLE, ethereum);
+        timelockInstance.revokeRole(CANCELLER_ROLE, ethereum);
+        timelockInstance.grantRole(PROPOSER_ROLE, address(govInstance));
+        timelockInstance.grantRole(EXECUTOR_ROLE, address(govInstance));
+        timelockInstance.grantRole(CANCELLER_ROLE, address(govInstance));
+        vm.stopPrank();
+
+        //deploy Treasury
+        bytes memory data4 = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
+        address payable proxy4 = payable(Upgrades.deployUUPSProxy("Treasury.sol", data4));
+        treasuryInstance = Treasury(proxy4);
+        address tImplementation = Upgrades.getImplementationAddress(proxy4);
+        assertFalse(address(treasuryInstance) == tImplementation);
         assertEq(tokenInstance.totalSupply(), 0);
         // this is the TGE
         vm.prank(guardian);
@@ -23,18 +73,21 @@ contract YodaGovernorTest is BasicDeploy {
         assertEq(govInstance.uupsVersion(), 1);
     }
 
-    function test_Revert_Initialization() public {
+    // Test case: Test Revert Initialization
+    function testRevertInitialization() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
         govInstance.initialize(tokenInstance, timelockInstance, guardian);
     }
 
-    function test_Owner() public {
+    // Test case: Test Owner
+    function testOwner() public {
         assertTrue(govInstance.owner() == guardian);
     }
 
-    function test_CreateProposal() public {
+    // Test case: Test CreateProposal
+    function testCreateProposal() public {
         // get enough gov tokens to make proposal (20K)
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -67,9 +120,9 @@ contract YodaGovernorTest is BasicDeploy {
         assertTrue(state == IGovernor.ProposalState.Active); //proposal active
     }
 
-    function test_CastVote() public {
+    // Test case: Test Cast Vote
+    function testCastVote() public {
         // get enough gov tokens to make proposal (20K)
-        // vm.deal(alice, 1 ether);
         address[] memory winners = new address[](3);
         winners[0] = alice;
         winners[1] = bob;
@@ -121,7 +174,8 @@ contract YodaGovernorTest is BasicDeploy {
         assertTrue(state1 == IGovernor.ProposalState.Succeeded); //proposal succeeded
     }
 
-    function test_QueProposal() public {
+    // Test case: Que Proposal
+    function testQueProposal() public {
         // get enough gov tokens to make proposal (20K)
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -180,7 +234,8 @@ contract YodaGovernorTest is BasicDeploy {
         assertTrue(state3 == IGovernor.ProposalState.Queued); //proposal queued
     }
 
-    function test_ExecuteProposal() public {
+    // Test case: ExecuteProposal
+    function testExecuteProposal() public {
         // get enough gov tokens to meet the quorum requirement (500K)
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -251,7 +306,8 @@ contract YodaGovernorTest is BasicDeploy {
         assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 28_000_000 ether - 1 ether);
     }
 
-    function test_Propose_QuorumDefeat() public {
+    // Test case: ProposeQuorumDefeat
+    function testProposeQuorumDefeat() public {
         // quorum at 1% is 500_000
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -301,7 +357,8 @@ contract YodaGovernorTest is BasicDeploy {
         assertTrue(state1 == IGovernor.ProposalState.Defeated); //proposal defeated
     }
 
-    function test_Revert_CreateProposal_Branch1() public {
+    // Test case: RevertCreateProposalBranch1
+    function testRevertCreateProposalBranch1() public {
         bytes memory callData = abi.encodeWithSignature("transfer(address,uint256)", managerAdmin, 1 ether);
         address[] memory to = new address[](1);
         to[0] = address(tokenInstance);
