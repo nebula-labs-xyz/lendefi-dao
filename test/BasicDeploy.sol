@@ -22,6 +22,7 @@ import {LendefiTimelockV2} from "../contracts/upgrades/LendefiTimelockV2.sol";
 import {TimelockControllerUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
 import {Upgrades, Options} from "openzeppelin-foundry-upgrades/Upgrades.sol";
+import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol"; // Path to your contract
 
 contract BasicDeploy is Test {
     event Upgrade(address indexed src, address indexed implementation);
@@ -195,6 +196,7 @@ contract BasicDeploy is Test {
         LendefiTimelockV2 ecoInstanceV2 = LendefiTimelockV2(proxy);
         assertEq(ecoInstanceV2.version(), 2);
         assertFalse(implAddressV2 == implAddressV1);
+        deployComplete();
 
         bool isUpgrader = ecoInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin);
         assertTrue(isUpgrader == true);
