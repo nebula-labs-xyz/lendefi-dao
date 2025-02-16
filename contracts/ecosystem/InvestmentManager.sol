@@ -65,6 +65,8 @@ contract InvestmentManager is
     mapping(uint32 round_ => mapping(address src => address vesting)) internal vestingContracts;
     /// @dev Tracks investor allocations per round
     mapping(uint32 round_ => mapping(address src => Investment)) internal investorAllocations;
+    /// @dev Allocation to round mapping
+    mapping(uint32 round_ => uint256 allocated) internal totalRoundAllocations;
     uint256[50] private __gap;
 
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -135,19 +137,47 @@ contract InvestmentManager is
      * @param ethTarget round target amount in ETH
      * @param tokenAlloc number of ecosystem tokens allocated to the round
      */
+    // function createRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
+    //     external
+    //     onlyRole(MANAGER_ROLE)
+    // {
+    //     supply += tokenAlloc;
+    //     uint256 balance = ecosystemToken.balanceOf(address(this));
+    //     if (balance < supply) revert CustomError("NO_SUPPLY");
+    //     uint64 end = start + duration;
+    //     Round memory item = Round(ethTarget, 0, tokenAlloc, 0, start, end, 0);
+    //     rounds.push(item);
+    //     emit CreateRound(SafeCast.toUint32(rounds.length - 1), start, duration, ethTarget, tokenAlloc);
+    // }
     function createRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
         external
         onlyRole(MANAGER_ROLE)
     {
+        // Validate parameters
+        if (duration == 0) revert CustomError("INVALID_DURATION");
+        if (ethTarget == 0) revert CustomError("INVALID_ETH_ALLOCATION");
+        if (tokenAlloc == 0) revert CustomError("INVALID_TOKEN_ALLOCATION");
+        // if (start < uint64(block.timestamp)) revert CustomError("INVALID_START_TIME");
+
+        // Check token supply
         supply += tokenAlloc;
         uint256 balance = ecosystemToken.balanceOf(address(this));
         if (balance < supply) revert CustomError("NO_SUPPLY");
-        uint64 end = start + duration;
-        Round memory item = Round(ethTarget, 0, tokenAlloc, 0, start, end, 1);
+
+        // Calculate end time
+        uint64 end = start + uint64(duration);
+
+        // Create new round with initial status 0 (Not Started)
+        Round memory item = Round(ethTarget, 0, tokenAlloc, 0, start, end, 0);
+
         rounds.push(item);
+
+        // Initialize round allocation tracking
+        uint32 roundId = SafeCast.toUint32(rounds.length - 1);
+        totalRoundAllocations[roundId] = 0;
+
         emit CreateRound(SafeCast.toUint32(rounds.length - 1), start, duration, ethTarget, tokenAlloc);
     }
-
     /**
      * @dev Green list investors and allocation post KYC.
      * @param round_ round number in question
@@ -155,14 +185,36 @@ contract InvestmentManager is
      * @param amountETH amount of ETH to invest
      * @param amountToken token allocation
      */
+    // function addInvestorAllocation(uint32 round_, address src, uint256 amountETH, uint256 amountToken)
+    //     external
+    //     onlyRole(ALLOCATOR_ROLE)
+    // {
+    //     if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
+    //     Investment storage investment = investorAllocations[round_][src];
+    //     investment.etherAmount = amountETH;
+    //     investment.tokenAmount = amountToken;
+    // }
+
     function addInvestorAllocation(uint32 round_, address src, uint256 amountETH, uint256 amountToken)
         external
         onlyRole(ALLOCATOR_ROLE)
     {
         if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
+        if (src == address(0)) revert CustomError("INVALID_ADDRESS");
+        if (amountETH == 0) revert CustomError("INVALID_ETH_AMOUNT");
+        if (amountToken == 0) revert CustomError("INVALID_TOKEN_AMOUNT");
+        Round storage currentRound = rounds[round_];
         Investment storage investment = investorAllocations[round_][src];
-        investment.etherAmount = amountETH;
-        investment.tokenAmount = amountToken;
+        uint256 totalAllocated = totalRoundAllocations[round_] + amountToken;
+
+        // Check if the new allocation exceeds the total allocation for the round
+        if (totalAllocated > currentRound.tokenAllocation) {
+            revert CustomError("ALLOCATION_EXCEEDS_ROUND_LIMIT");
+        }
+
+        investment.etherAmount += amountETH;
+        investment.tokenAmount += amountToken;
+        totalRoundAllocations[round_] = totalAllocated;
     }
 
     /**
@@ -191,7 +243,7 @@ contract InvestmentManager is
      * @param round_ round number in question
      */
     function cancelInvestment(uint32 round_) external nonReentrant {
-        if (round_ > rounds.length) revert CustomError("INVALID_ROUND");
+        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
         Round storage current = rounds[round_];
         if (current.etherInvested == current.etherTarget) {
             revert CustomError("ROUND_CLOSED");
@@ -205,7 +257,7 @@ contract InvestmentManager is
         ipos[round_][msg.sender] = 0;
 
         Investment memory item = investorAllocations[round_][msg.sender];
-        investorAllocations[round][msg.sender] = Investment(0, 0);
+        investorAllocations[round_][msg.sender] = Investment(0, 0);
 
         totalAllocation -= item.tokenAmount;
         current.etherInvested -= item.etherAmount;
