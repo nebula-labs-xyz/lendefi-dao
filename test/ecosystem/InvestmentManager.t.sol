@@ -721,6 +721,82 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(roundInfo.etherInvested, amount);
     }
 
+    // Test: CreateRound Start Time Too Old
+    function testCreateRoundStartTimeTooOld() public {
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
+
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_START_TIME");
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(expError);
+        imInstance.createRound(uint64(block.timestamp - 2 days), 5 days, 100 ether, 1000 ether);
+    }
+
+    // Test: CreateRound Minimum Duration
+    function testCreateRoundMinimumDuration() public {
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
+
+        vm.prank(address(timelockInstance));
+        imInstance.createRound(uint64(block.timestamp), 5 days, 100 ether, 1000 ether);
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.end - roundInfo.start, 5 days);
+    }
+
+    // Test: CreateRound Start Time One Day Past
+    function testCreateRoundStartTimeOneDayPast() public {
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
+
+        vm.prank(address(timelockInstance));
+        imInstance.createRound(uint64(block.timestamp - 1 days), 5 days, 100 ether, 1000 ether);
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.start, block.timestamp - 1 days);
+    }
+
+    // Test: CreateRound Future Start Time
+    function testCreateRoundFutureStartTime() public {
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
+
+        vm.prank(address(timelockInstance));
+        imInstance.createRound(uint64(block.timestamp + 1 days), 5 days, 100 ether, 1000 ether);
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.start, block.timestamp + 1 days);
+    }
+
+    // Test: CreateRound Fuzz Duration
+    function testFuzzCreateRoundDuration(uint64 duration) public {
+        vm.assume(duration >= 5 days && duration <= 365 days);
+
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
+
+        vm.prank(address(timelockInstance));
+        imInstance.createRound(uint64(block.timestamp), duration, 100 ether, 1000 ether);
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.end - roundInfo.start, duration);
+    }
+
+    // Test: CreateRound Fuzz Start Time
+    function testFuzzCreateRoundStartTime(uint64 startOffset) public {
+        vm.assume(startOffset <= 1 days);
+        uint64 startTime = uint64(block.timestamp - startOffset);
+
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
+
+        vm.prank(address(timelockInstance));
+        imInstance.createRound(startTime, 5 days, 100 ether, 1000 ether);
+
+        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
+        assertEq(roundInfo.start, startTime);
+    }
+
     function createRound(uint256 target, uint256 allocation) public {
         // execute a DAO proposal that
         // 1. moves token allocation from treasury to the InvestmentManager
@@ -754,7 +830,7 @@ contract InvestmentManagerTest is BasicDeploy {
         // part2 - call InvestmentManager to createRound
         bytes memory callData2 = abi.encodeWithSignature(
             "createRound(uint64,uint64,uint256,uint256)",
-            uint64(block.timestamp),
+            uint64(block.timestamp + 7 days),
             uint64(90 * 24 * 60 * 60),
             target,
             allocation
