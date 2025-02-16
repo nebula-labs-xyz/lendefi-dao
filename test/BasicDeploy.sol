@@ -28,6 +28,7 @@ contract BasicDeploy is Test {
     event Upgrade(address indexed src, address indexed implementation);
 
     bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
+    bytes32 internal constant ALLOCATOR_ROLE = keccak256("ALLOCATOR_ROLE");
     bytes32 internal constant PROPOSER_ROLE = keccak256("PROPOSER_ROLE");
     bytes32 internal constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
     bytes32 internal constant CANCELLER_ROLE = keccak256("CANCELLER_ROLE");
