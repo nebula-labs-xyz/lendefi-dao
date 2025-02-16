@@ -137,27 +137,15 @@ contract InvestmentManager is
      * @param ethTarget round target amount in ETH
      * @param tokenAlloc number of ecosystem tokens allocated to the round
      */
-    // function createRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
-    //     external
-    //     onlyRole(MANAGER_ROLE)
-    // {
-    //     supply += tokenAlloc;
-    //     uint256 balance = ecosystemToken.balanceOf(address(this));
-    //     if (balance < supply) revert CustomError("NO_SUPPLY");
-    //     uint64 end = start + duration;
-    //     Round memory item = Round(ethTarget, 0, tokenAlloc, 0, start, end, 0);
-    //     rounds.push(item);
-    //     emit CreateRound(SafeCast.toUint32(rounds.length - 1), start, duration, ethTarget, tokenAlloc);
-    // }
     function createRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
         external
         onlyRole(MANAGER_ROLE)
     {
         // Validate parameters
-        if (duration == 0) revert CustomError("INVALID_DURATION");
+        if (duration < 5 days) revert CustomError("INVALID_DURATION");
         if (ethTarget == 0) revert CustomError("INVALID_ETH_ALLOCATION");
         if (tokenAlloc == 0) revert CustomError("INVALID_TOKEN_ALLOCATION");
-        // if (start < uint64(block.timestamp)) revert CustomError("INVALID_START_TIME");
+        if (start < uint64(block.timestamp - 1 days)) revert CustomError("INVALID_START_TIME");
 
         // Check token supply
         supply += tokenAlloc;
@@ -185,15 +173,6 @@ contract InvestmentManager is
      * @param amountETH amount of ETH to invest
      * @param amountToken token allocation
      */
-    // function addInvestorAllocation(uint32 round_, address src, uint256 amountETH, uint256 amountToken)
-    //     external
-    //     onlyRole(ALLOCATOR_ROLE)
-    // {
-    //     if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-    //     Investment storage investment = investorAllocations[round_][src];
-    //     investment.etherAmount = amountETH;
-    //     investment.tokenAmount = amountToken;
-    // }
 
     function addInvestorAllocation(uint32 round_, address src, uint256 amountETH, uint256 amountToken)
         external
