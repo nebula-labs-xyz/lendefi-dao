@@ -19,6 +19,16 @@ contract TreasuryTest is BasicDeploy {
     event EtherReleased(address indexed to, uint256 amount);
     event ERC20Released(address indexed token, address indexed to, uint256 amount);
 
+    receive() external payable {
+        if (msg.sender == address(treasuryInstance)) {
+            // extends test_Revert_ReleaseEther_Branch4()
+            bytes memory expError = abi.encodeWithSignature("ReentrancyGuardReentrantCall()");
+            vm.prank(managerAdmin);
+            vm.expectRevert(expError); // reentrancy
+            treasuryInstance.release(guardian, 100 ether);
+        }
+    }
+
     function setUp() public {
         vm.warp(block.timestamp + 365 days);
         startTime = uint64(block.timestamp - 180 days);
@@ -39,16 +49,6 @@ contract TreasuryTest is BasicDeploy {
         // Fund contract
         deal(address(token), address(treasuryContract), vestingAmount);
         vm.deal(address(treasuryContract), vestingAmount);
-    }
-
-    receive() external payable {
-        if (msg.sender == address(treasuryInstance)) {
-            // extends test_Revert_ReleaseEther_Branch4()
-            bytes memory expError = abi.encodeWithSignature("ReentrancyGuardReentrantCall()");
-            vm.prank(managerAdmin);
-            vm.expectRevert(expError); // reentrancy
-            treasuryInstance.release(guardian, 100 ether);
-        }
     }
 
     // Test: Only Pauser Can Pause
@@ -284,8 +284,9 @@ contract MockERC20 is IERC20 {
         balances[msg.sender] = totalSupply;
     }
 
-    function balanceOf(address account) external view override returns (uint256) {
-        return balances[account];
+    function approve(address spender, uint256 amount) external override returns (bool) {
+        allowances[msg.sender][spender] = amount;
+        return true;
     }
 
     function transfer(address recipient, uint256 amount) external override returns (bool) {
@@ -304,9 +305,8 @@ contract MockERC20 is IERC20 {
         return true;
     }
 
-    function approve(address spender, uint256 amount) external override returns (bool) {
-        allowances[msg.sender][spender] = amount;
-        return true;
+    function balanceOf(address account) external view override returns (uint256) {
+        return balances[account];
     }
 
     function allowance(address owner, address spender) external view override returns (uint256) {
