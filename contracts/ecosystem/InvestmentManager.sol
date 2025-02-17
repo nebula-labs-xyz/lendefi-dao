@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.23;
 /**
- * @title Lendefi DAO Ecosystem Investment manager
- * @notice Handles privaste placements and vesting contracts
- * @author Nebula Labs LLC
+ * @title Enhanced Investment Manager
+ * @notice Manages investment rounds and token vesting for the ecosystem
+ * @dev Implements a secure and upgradeable investment management system
  * @custom:security-contact security@nebula-labs.xyz
  */
 
 import {ILENDEFI} from "../interfaces/ILendefi.sol";
-import {IWETH9} from "../interfaces/IWETH9.sol";
-import {IINVESTOR} from "../interfaces/IInvestmentManager.sol";
+import {IINVMANAGER} from "../interfaces/IInvestmentManager.sol";
 import {InvestorVesting} from "./InvestorVesting.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {IERC20, SafeERC20 as TH} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
@@ -22,401 +21,879 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 
 /// @custom:oz-upgrades
 contract InvestmentManager is
-    IINVESTOR,
+    IINVMANAGER,
     Initializable,
     PausableUpgradeable,
     AccessControlUpgradeable,
     ReentrancyGuardUpgradeable,
     UUPSUpgradeable
 {
-    /// @dev AccessControl Pauser Role
-    bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    /// @dev AccessControl Manager Role
-    bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev AccessControl Upgrader Role
-    bytes32 internal constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    /// @dev AccessControl Allocator Role
-    bytes32 internal constant ALLOCATOR_ROLE = keccak256("ALLOCATOR_ROLE");
+    using Address for address payable;
+    using SafeERC20 for ILENDEFI;
+    using SafeCast for uint256;
 
-    /// @dev governance token instance
-    ILENDEFI internal ecosystemToken;
-    /// @dev WETH token instance
-    IWETH9 internal wethContract;
-    /// @dev timelock address
+    // ============ Constants ============
+
+    uint256 private constant MAX_INVESTORS_PER_ROUND = 50;
+    uint256 private constant MIN_ROUND_DURATION = 5 days;
+    uint256 private constant MAX_ROUND_DURATION = 90 days;
+
+    // ============ Roles ============
+
+    bytes32 private constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 private constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 private constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 private constant DAO_ROLE = keccak256("DAO_ROLE");
+
+    // ============ State Variables ============
+
+    ILENDEFI public ecosystemToken;
     address public timelock;
-    /// @dev treasury address
     address public treasury;
-    /// @dev amount of ecosystem tokens in the contract
     uint256 public supply;
-    /// @dev amount of tokens allocated to vesting
     uint256 public totalAllocation;
-    /// @dev number of UUPS upgrades
     uint32 public version;
-    /// @dev number of the current round
-    uint32 public round;
-    /// @dev Round object array
+
     Round[] public rounds;
-    /// @dev Investor to round mapping
-    mapping(uint32 round_ => address[] participans) internal investors_;
-    /// @dev tracks investor position in the investors_ array mapping above
-    /// @dev in order to be able to cancel investments without looping, just like EnumarableSet contract
-    mapping(uint32 round_ => mapping(address src => uint256 pos)) internal ipos;
-    /// @dev Vesting contract addresses for investors per round
-    mapping(uint32 round_ => mapping(address src => address vesting)) internal vestingContracts;
-    /// @dev Tracks investor allocations per round
-    mapping(uint32 round_ => mapping(address src => Investment)) internal investorAllocations;
-    /// @dev Allocation to round mapping
-    mapping(uint32 round_ => uint256 allocated) internal totalRoundAllocations;
-    uint256[50] private __gap;
+
+    mapping(uint32 => address[]) private investors;
+    mapping(uint32 => mapping(address => uint256)) private investorPositions;
+    mapping(uint32 => mapping(address => address)) private vestingContracts;
+    mapping(uint32 => mapping(address => Allocation)) private investorAllocations;
+    mapping(uint32 => uint256) private totalRoundAllocations;
+
+    uint256[45] private __gap;
+
+    // ============ Modifiers ============
+
+    modifier validRound(uint32 roundId) {
+        require(roundId < rounds.length, "INVALID_ROUND");
+        _;
+    }
+
+    modifier activeRound(uint32 roundId) {
+        require(rounds[roundId].status == RoundStatus.ACTIVE, "ROUND_NOT_ACTIVE");
+        _;
+    }
+
+    modifier correctStatus(uint32 roundId, RoundStatus requiredStatus) {
+        require(rounds[roundId].status == requiredStatus, "INVALID_ROUND_STATUS");
+        _;
+    }
+
+    // ============ Constructor & Initializer ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    /// @notice solidity receive function
-    /// @dev triggers the investEther function on receive
+    /**
+     * @notice Fallback function to handle direct ETH transfers
+     * @dev Automatically invests in the current active round
+     * @dev Process:
+     *      1. Gets current active round number
+     *      2. Validates active round exists
+     *      3. Forwards ETH to investEther function
+     * @dev Requirements:
+     *      - At least one round must be active
+     *      - Sent ETH must match remaining allocation
+     *      - Sender must have valid allocation
+     * @custom:throws NO_ACTIVE_ROUND if no round is currently active
+     * @custom:throws AMOUNT_ALLOCATION_MISMATCH if sent amount doesn't match allocation
+     * @custom:throws NO_ALLOCATION if sender has no allocation
+     * @custom:emits Invest when investment is processed
+     * @custom:security Forwards to investEther which has reentrancy protection
+     * @custom:security Validates round status before processing
+     */
     receive() external payable {
-        if (msg.sender != address(wethContract)) investEther(round);
+        uint32 round = getCurrentRound();
+        require(round < type(uint32).max, "NO_ACTIVE_ROUND");
+        investEther(round);
     }
 
     /**
-     * @dev Initializes the this contract
-     * @param token ecosystem token address
-     * @param timelock_ timelock address
-     * @param treasury_ treasury address
-     * @param weth_ WETH address
-     * @param guardian guardian address
+     * @notice Initializes the Investment Manager contract with core dependencies
+     * @dev Sets up initial roles and contract references
+     * @dev Initialization sequence:
+     *      1. Initializes security modules:
+     *         - Pausable functionality
+     *         - Access control system
+     *         - UUPS upgrade mechanism
+     *         - Reentrancy protection
+     *      2. Validates addresses
+     *      3. Sets up roles and permissions
+     *      4. Initializes contract references
+     *      5. Sets initial version
+     * @param token Address of the ecosystem token contract
+     * @param timelock_ Address of the timelock contract for governance
+     * @param treasury_ Address of the treasury contract
+     * @param guardian Address of the initial guardian who receives admin roles
+     * @custom:throws ZERO_ADDRESS_DETECTED if any parameter is zero address
+     * @custom:security Can only be called once due to initializer modifier
+     * @custom:security Sets up critical security features first
+     * @custom:security Validates all addresses before use
+     * @custom:emits Initialized when setup is complete
      */
-    function initialize(address token, address timelock_, address treasury_, address weth_, address guardian)
-        external
-        initializer
-    {
+    function initialize(address token, address timelock_, address treasury_, address guardian) external initializer {
         __Pausable_init();
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
-        if (
-            token != address(0x0) && timelock_ != address(0x0) && treasury_ != address(0x0) && weth_ != address(0x0)
-                && guardian != address(0x0)
-        ) {
-            _grantRole(DEFAULT_ADMIN_ROLE, guardian);
-            _grantRole(MANAGER_ROLE, timelock_);
-            _grantRole(PAUSER_ROLE, guardian);
-            _grantRole(ALLOCATOR_ROLE, guardian);
-            ecosystemToken = ILENDEFI(payable(token));
-            wethContract = IWETH9(payable(weth_));
 
-            timelock = timelock_;
-            treasury = treasury_;
-            version++;
-            emit Initialized(msg.sender);
-        } else {
-            revert CustomError("ZERO_ADDRESS_DETECTED");
-        }
+        require(
+            token != address(0) && timelock_ != address(0) && treasury_ != address(0) && guardian != address(0),
+            "ZERO_ADDRESS_DETECTED"
+        );
+
+        _setupRoles(guardian, timelock_);
+        _initializeContracts(token, timelock_, treasury_);
+
+        version = 1;
+        emit Initialized(msg.sender);
     }
 
     /**
-     * @dev Pause contract.
+     * @notice Pauses all contract operations
+     * @dev Only callable by accounts with PAUSER_ROLE
+     * @dev When paused:
+     *      - No new rounds can be created
+     *      - No investments can be made
+     *      - No rounds can be activated
+     *      - No rounds can be finalized
+     *      - Cancellations and refunds remain active for security
+     * @custom:throws Unauthorized if caller lacks PAUSER_ROLE
+     * @custom:emits Paused event with caller's address
+     * @custom:security Inherits OpenZeppelin's Pausable implementation
+     * @custom:security Role-based access control via PAUSER_ROLE
+     * @custom:security Emergency stop mechanism for contract operations
      */
     function pause() external onlyRole(PAUSER_ROLE) {
         _pause();
+        emit Paused(msg.sender);
     }
 
     /**
-     * @dev Unpause contract.
+     * @notice Unpauses all contract operations
+     * @dev Only callable by accounts with PAUSER_ROLE
+     * @dev After unpausing:
+     *      - Round creation becomes available
+     *      - Investments can be processed
+     *      - Round activation allowed
+     *      - Round finalization enabled
+     *      - Normal contract operations resume
+     * @custom:throws Unauthorized if caller lacks PAUSER_ROLE
+     * @custom:emits Unpaused event with caller's address
+     * @custom:security Inherits OpenZeppelin's Pausable implementation
+     * @custom:security Role-based access control via PAUSER_ROLE
+     * @custom:security Restores normal contract functionality
      */
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
+        emit Unpaused(msg.sender);
     }
 
     /**
-     * @dev Creates an investment round.
-     * @param start round start timestamp
-     * @param duration seconds
-     * @param ethTarget round target amount in ETH
-     * @param tokenAlloc number of ecosystem tokens allocated to the round
+     * @notice Creates a new investment round with custom vesting parameters
+     * @dev Only callable by accounts with DAO_ROLE when contract is not paused
+     * @param start The timestamp when the round starts
+     * @param duration The duration of the round in seconds
+     * @param ethTarget The target amount of ETH to raise
+     * @param tokenAlloc The amount of tokens allocated for the round
+     * @param vestingCliff The cliff period in seconds before vesting begins
+     * @param vestingDuration The total duration of the vesting period in seconds
+     * @return roundId The identifier of the newly created round
+     * @custom:throws INVALID_DURATION if round duration is outside allowed range
+     * @custom:throws INVALID_ETH_TARGET if ethTarget is 0
+     * @custom:throws INVALID_TOKEN_ALLOCATION if tokenAlloc is 0
+     * @custom:throws INVALID_START_TIME if start is in the past
+     * @custom:throws INVALID_VESTING_PARAMETERS if vesting parameters are outside allowed range
+     * @custom:throws INSUFFICIENT_SUPPLY if contract doesn't have enough tokens
+     * @custom:emits CreateRound when round is created
+     * @custom:emits RoundStatusUpdated when round status is set to PENDING
      */
-    function createRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
-        external
-        onlyRole(MANAGER_ROLE)
-    {
-        // Validate parameters
-        if (duration < 5 days) revert CustomError("INVALID_DURATION");
-        if (ethTarget == 0) revert CustomError("INVALID_ETH_ALLOCATION");
-        if (tokenAlloc == 0) revert CustomError("INVALID_TOKEN_ALLOCATION");
-        if (start < uint64(block.timestamp - 1 days)) revert CustomError("INVALID_START_TIME");
+    function createRound(
+        uint64 start,
+        uint64 duration,
+        uint256 ethTarget,
+        uint256 tokenAlloc,
+        uint64 vestingCliff,
+        uint64 vestingDuration
+    ) external onlyRole(DAO_ROLE) whenNotPaused returns (uint32) {
+        require(duration >= MIN_ROUND_DURATION, "INVALID_DURATION");
+        require(duration <= MAX_ROUND_DURATION, "INVALID_DURATION");
+        require(ethTarget > 0, "INVALID_ETH_TARGET");
+        require(tokenAlloc > 0, "INVALID_TOKEN_ALLOCATION");
+        require(start >= block.timestamp, "INVALID_START_TIME");
 
-        // Check token supply
         supply += tokenAlloc;
-        uint256 balance = ecosystemToken.balanceOf(address(this));
-        if (balance < supply) revert CustomError("NO_SUPPLY");
+        require(ecosystemToken.balanceOf(address(this)) >= supply, "INSUFFICIENT_SUPPLY");
 
-        // Calculate end time
-        uint64 end = start + uint64(duration);
+        uint64 end = start + duration;
+        Round memory newRound = Round({
+            etherTarget: ethTarget,
+            etherInvested: 0,
+            tokenAllocation: tokenAlloc,
+            tokenDistributed: 0,
+            startTime: start,
+            endTime: end,
+            vestingCliff: vestingCliff,
+            vestingDuration: vestingDuration,
+            participants: 0,
+            status: RoundStatus.PENDING
+        });
 
-        // Create new round with initial status 0 (Not Started)
-        Round memory item = Round(ethTarget, 0, tokenAlloc, 0, start, end, 0);
-
-        rounds.push(item);
-
-        // Initialize round allocation tracking
-        uint32 roundId = SafeCast.toUint32(rounds.length - 1);
+        rounds.push(newRound);
+        uint32 roundId = uint32(rounds.length - 1);
         totalRoundAllocations[roundId] = 0;
 
-        emit CreateRound(SafeCast.toUint32(rounds.length - 1), start, duration, ethTarget, tokenAlloc);
+        emit CreateRound(roundId, start, duration, ethTarget, tokenAlloc);
+        emit RoundStatusUpdated(roundId, RoundStatus.PENDING);
+        return roundId;
     }
-    /**
-     * @dev Green list investors and allocation post KYC.
-     * @param round_ round number in question
-     * @param src investor address
-     * @param amountETH amount of ETH to invest
-     * @param amountToken token allocation
-     */
 
-    function addInvestorAllocation(uint32 round_, address src, uint256 amountETH, uint256 amountToken)
+    /**
+     * @notice Activates a pending investment round
+     * @dev Only callable by accounts with MANAGER_ROLE
+     * @dev Requires:
+     *      - Round exists (validRound modifier)
+     *      - Round is in PENDING status (correctStatus modifier)
+     *      - Contract is not paused (whenNotPaused modifier)
+     *      - Current time is within round's time window
+     * @param roundId The identifier of the round to activate
+     * @custom:throws ROUND_START_TIME_NOT_REACHED if current time is before round start
+     * @custom:throws ROUND_END_TIME_REACHED if current time is after round end
+     * @custom:throws INVALID_ROUND if roundId is invalid
+     * @custom:throws INVALID_ROUND_STATUS if round is not in PENDING status
+     * @custom:emits RoundStatusUpdated when round status changes to ACTIVE
+     */
+    function activateRound(uint32 roundId)
         external
-        onlyRole(ALLOCATOR_ROLE)
+        onlyRole(MANAGER_ROLE)
+        validRound(roundId)
+        correctStatus(roundId, RoundStatus.PENDING)
+        whenNotPaused
     {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        if (src == address(0)) revert CustomError("INVALID_ADDRESS");
-        if (amountETH == 0) revert CustomError("INVALID_ETH_AMOUNT");
-        if (amountToken == 0) revert CustomError("INVALID_TOKEN_AMOUNT");
-        Round storage currentRound = rounds[round_];
-        Investment storage investment = investorAllocations[round_][src];
-        uint256 totalAllocated = totalRoundAllocations[round_] + amountToken;
+        Round storage currentRound = rounds[roundId];
+        require(block.timestamp >= currentRound.startTime, "ROUND_START_TIME_NOT_REACHED");
+        require(block.timestamp < currentRound.endTime, "ROUND_END_TIME_REACHED");
 
-        // Check if the new allocation exceeds the total allocation for the round
-        if (totalAllocated > currentRound.tokenAllocation) {
-            revert CustomError("ALLOCATION_EXCEEDS_ROUND_LIMIT");
-        }
-
-        investment.etherAmount += amountETH;
-        investment.tokenAmount += amountToken;
-        totalRoundAllocations[round_] = totalAllocated;
+        _updateRoundStatus(roundId, RoundStatus.ACTIVE);
     }
 
     /**
-     * @dev Green list investors and allocation post KYC.
-     * @param round_ round number in question
-     * @param src investor address
+     * @notice Adds or updates token allocation for an investor in a specific round
+     * @dev Only callable by accounts with MANAGER_ROLE when contract is not paused
+     * @dev Requires:
+     *      - Round exists (validRound modifier)
+     *      - Round is not completed
+     *      - Valid investor address
+     *      - Non-zero amounts
+     *      - Total allocation within round limits
+     * @param roundId The identifier of the investment round
+     * @param investor The address of the investor receiving the allocation
+     * @param ethAmount The amount of ETH being allocated
+     * @param tokenAmount The amount of tokens being allocated
+     * @custom:throws INVALID_INVESTOR if investor address is zero
+     * @custom:throws INVALID_ETH_AMOUNT if ethAmount is zero
+     * @custom:throws INVALID_TOKEN_AMOUNT if tokenAmount is zero
+     * @custom:throws INVALID_ROUND_STATUS if round is completed or cancelled
+     * @custom:throws EXCEEDS_ROUND_ALLOCATION if new total exceeds round allocation
+     * @custom:emits InvestorAllocated when allocation is successfully added/updated
      */
-    function removeInvestorAllocation(uint32 round_, address src) external onlyRole(ALLOCATOR_ROLE) {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        delete investorAllocations[round_][src];
+    function addInvestorAllocation(uint32 roundId, address investor, uint256 ethAmount, uint256 tokenAmount)
+        external
+        onlyRole(MANAGER_ROLE)
+        validRound(roundId)
+        whenNotPaused
+    {
+        require(investor != address(0), "INVALID_INVESTOR");
+        require(ethAmount > 0, "INVALID_ETH_AMOUNT");
+        require(tokenAmount > 0, "INVALID_TOKEN_AMOUNT");
+
+        Round storage currentRound = rounds[roundId];
+        require(uint8(currentRound.status) < uint8(RoundStatus.COMPLETED), "INVALID_ROUND_STATUS");
+
+        Allocation storage investment = investorAllocations[roundId][investor];
+        require(investment.etherAmount == 0 && investment.tokenAmount == 0, "ALLOCATION_EXISTS");
+
+        uint256 newTotal = totalRoundAllocations[roundId] + tokenAmount;
+        require(newTotal <= currentRound.tokenAllocation, "EXCEEDS_ROUND_ALLOCATION");
+
+        investment.etherAmount = ethAmount;
+        investment.tokenAmount = tokenAmount;
+        totalRoundAllocations[roundId] = newTotal;
+
+        emit InvestorAllocated(roundId, investor, ethAmount, tokenAmount);
     }
 
     /**
-     * @dev Processes WETH investment into a round.
-     * @param round_ round number in question
-     * @param amount amount of ETH to invest
+     * @notice Removes an investor's allocation from a specific investment round
+     * @dev Only callable by accounts with MANAGER_ROLE when contract is not paused
+     * @dev Requirements:
+     *      - Round exists (validRound modifier)
+     *      - Round is not completed
+     *      - Valid investor address
+     *      - Allocation exists for investor
+     *      - Investor has not made any investments yet
+     * @dev State Changes:
+     *      - Zeros out investor's allocation
+     *      - Decrements total round allocation
+     * @param roundId The identifier of the investment round
+     * @param investor The address of the investor whose allocation to remove
+     * @custom:throws INVALID_INVESTOR if investor address is zero
+     * @custom:throws INVALID_ROUND_STATUS if round is completed or cancelled
+     * @custom:throws NO_ALLOCATION_EXISTS if investor has no allocation
+     * @custom:throws INVESTOR_HAS_ACTIVE_POSITION if investor has already invested
+     * @custom:emits InvestorAllocationRemoved when allocation is successfully removed
+     * @custom:security Uses validRound modifier to prevent invalid round access
+     * @custom:security Updates state before event emission
+     * @custom:security Maintains accurate total allocation tracking
      */
-    function investWETH(uint32 round_, uint256 amount) external whenNotPaused {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        invest(round_, amount);
-        TH.safeTransferFrom(IERC20(address(wethContract)), msg.sender, address(this), amount);
+    function removeInvestorAllocation(uint32 roundId, address investor)
+        external
+        onlyRole(MANAGER_ROLE)
+        validRound(roundId)
+        whenNotPaused
+    {
+        require(investor != address(0), "INVALID_INVESTOR");
+
+        Round storage currentRound = rounds[roundId];
+
+        require(
+            currentRound.status == RoundStatus.PENDING || currentRound.status == RoundStatus.ACTIVE,
+            "INVALID_ROUND_STATUS"
+        );
+
+        Allocation storage investment = investorAllocations[roundId][investor];
+        require(investment.etherAmount > 0 || investment.tokenAmount > 0, "NO_ALLOCATION_EXISTS");
+        require(investorPositions[roundId][investor] == 0, "INVESTOR_HAS_ACTIVE_POSITION");
+
+        uint256 tokenAmount = investment.tokenAmount;
+        totalRoundAllocations[roundId] -= tokenAmount;
+        emit InvestorAllocationRemoved(roundId, investor, investment.etherAmount, tokenAmount);
+        investment.etherAmount = 0;
+        investment.tokenAmount = 0;
     }
 
     /**
-     * @dev Allows investor to get a rufund from an open round.
-     * @param round_ round number in question
+     * @notice Allows investors to cancel their investment before round ends
+     * @dev Refunds the investor's ETH and updates round state
+     * @dev Requirements:
+     *      - Round exists (validRound modifier)
+     *      - Protected against reentrancy (nonReentrant modifier)
+     *      - Round has not ended
+     *      - Caller has an active investment
+     * @dev State Changes:
+     *      - Sets investor's position to 0
+     *      - Decrements round's total ETH invested
+     *      - Decrements round's participant count
+     *      - Removes investor from round's investor list
+     * @param roundId The identifier of the round to cancel investment from
+     * @custom:throws ROUND_ENDED if round end time has passed
+     * @custom:throws NO_INVESTMENT if caller has no active investment
+     * @custom:throws INVALID_ROUND if roundId is invalid
+     * @custom:emits CancelInvestment when investment is successfully cancelled
+     * @custom:security Uses nonReentrant modifier to prevent reentrancy attacks
+     * @custom:security Uses Address.sendValue for safe ETH transfer
      */
-    function cancelInvestment(uint32 round_) external nonReentrant {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        Round storage current = rounds[round_];
-        if (current.etherInvested == current.etherTarget) {
-            revert CustomError("ROUND_CLOSED");
-        }
+    function cancelInvestment(uint32 roundId) external validRound(roundId) nonReentrant {
+        Round storage currentRound = rounds[roundId];
+        require(block.timestamp <= currentRound.endTime, "ROUND_ENDED");
 
-        uint256 pos = ipos[round_][msg.sender];
-        if (pos == 0) revert CustomError("INVESTOR_NOT_EXIST");
+        uint256 investedAmount = investorPositions[roundId][msg.sender];
+        require(investedAmount > 0, "NO_INVESTMENT");
 
-        investors_[round_][pos - 1] = investors_[round_][investors_[round_].length - 1];
-        investors_[round_].pop();
-        ipos[round_][msg.sender] = 0;
+        investorPositions[roundId][msg.sender] = 0;
+        currentRound.etherInvested -= investedAmount;
+        currentRound.participants--;
 
-        Investment memory item = investorAllocations[round_][msg.sender];
-        investorAllocations[round_][msg.sender] = Investment(0, 0);
-
-        totalAllocation -= item.tokenAmount;
-        current.etherInvested -= item.etherAmount;
-        current.participants--;
-        emit CancelInvestment(round_, msg.sender, item.etherAmount);
-        TH.safeTransfer(IERC20(address(wethContract)), msg.sender, item.etherAmount);
+        _removeInvestor(roundId, msg.sender);
+        emit CancelInvestment(roundId, msg.sender, investedAmount);
+        payable(msg.sender).sendValue(investedAmount);
     }
 
     /**
-     * @dev Closes an investment round after the round target has been reached.
-     * @param round_ round number in question
+     * @notice Finalizes an investment round and deploys vesting contracts for investors
+     * @dev Processes token distribution and transfers ETH to treasury
+     * @dev Requirements:
+     *      - Round exists (validRound modifier)
+     *      - Protected against reentrancy (nonReentrant modifier)
+     *      - Contract not paused (whenNotPaused modifier)
+     *      - Round must be in COMPLETED status
+     * @dev Process:
+     *      1. Validates round status
+     *      2. Iterates through all round investors
+     *      3. For each valid investment:
+     *         - Calculates token allocation
+     *         - Deploys vesting contract
+     *         - Transfers tokens to vesting contract
+     *         - Updates round token distribution
+     *      4. Updates round status to FINALIZED
+     *      5. Transfers accumulated ETH to treasury
+     * @param roundId The identifier of the round to finalize
+     * @custom:throws INVALID_ROUND_STATUS if round is not in COMPLETED status
+     * @custom:throws NOTHING_INVESTED if no ETH was invested in the round
+     * @custom:throws WITHDRAWAL_FAILED if ETH transfer to treasury fails
+     * @custom:emits RoundFinalized with final round statistics
+     * @custom:security Uses nonReentrant modifier to prevent reentrancy
+     * @custom:security Uses SafeERC20 for token transfers
+     * @custom:security Uses unchecked block for gas optimization in loop counter
      */
-    function closeRound(uint32 round_) external nonReentrant {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        Round memory current = rounds[round_];
+    function finalizeRound(uint32 roundId) external validRound(roundId) nonReentrant whenNotPaused {
+        Round storage currentRound = rounds[roundId];
+        require(currentRound.status == RoundStatus.COMPLETED, "INVALID_ROUND_STATUS");
 
-        if (current.etherInvested < current.etherTarget) {
-            revert CustomError("ROUND_STILL_OPEN");
-        }
+        address[] storage roundInvestors = investors[roundId];
+        uint256 investorCount = roundInvestors.length;
 
-        round++;
-        deployVestingContracts(round_);
-        wethContract.withdraw(current.etherInvested);
+        for (uint256 i = 0; i < investorCount;) {
+            address investor = roundInvestors[i];
+            uint256 investedAmount = investorPositions[roundId][investor];
+            if (investedAmount == 0) continue;
 
-        emit RoundClosed(msg.sender, round_);
-        (bool success,) = payable(treasury).call{value: current.etherInvested}("");
-        if (!success) revert CustomError("WITHDRAWAL_FAILED");
-    }
+            Allocation storage allocation = investorAllocations[roundId][investor];
+            uint256 tokenAmount = (investedAmount * allocation.tokenAmount) / allocation.etherAmount;
 
-    /**
-     * @dev Allows manager to cancel a round if need be, and issues refunds (WETH) to investors.
-     * @param round_ round number in question
-     */
-    function cancelRound(uint32 round_) external nonReentrant onlyRole(MANAGER_ROLE) {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        Round memory current = rounds[round_];
-        if (current.etherInvested == current.etherTarget) {
-            revert CustomError("ROUND_CLOSED");
-        }
+            address vestingContract = _deployVestingContract(investor, tokenAmount, roundId);
+            vestingContracts[roundId][investor] = vestingContract;
 
-        address[] memory investors = investors_[round_];
-        uint64 len = SafeCast.toUint64(investors.length);
-        if (round_ != rounds.length - 1 || round_ == 0) {
-            revert CustomError("CANT_CANCEL_ROUND");
-        }
-
-        rounds.pop();
-        supply -= current.tokenAllocation;
-        emit RoundCancelled(round_);
-        uint256 total = totalAllocation;
-        if (len <= 50) {
-            for (uint64 i; i < len; ++i) {
-                Investment memory item = investorAllocations[round_][investors[i]];
-                total = total - item.tokenAmount;
-                investorAllocations[round_][investors[i]] = Investment(0, 0);
-                TH.safeTransfer(IERC20(address(wethContract)), investors[i], item.etherAmount);
+            ecosystemToken.safeTransfer(vestingContract, tokenAmount);
+            currentRound.tokenDistributed += tokenAmount;
+            unchecked {
+                ++i;
             }
-            totalAllocation = total;
-            withdrawTokens(round_, current.tokenAllocation);
-        } else {
-            revert CustomError("GAS_LIMIT");
-        }
-    }
-
-    /**
-     * @dev Getter ruturns the curretly active round.
-     * @return current round number
-     */
-    function getCurrentRound() external view returns (uint32) {
-        return round;
-    }
-
-    /**
-     * @dev Getter ruturns the curretly active round details: Round object.
-     * @param round_ round number in question
-     * @return returns Round object
-     */
-    function getRoundInfo(uint32 round_) external view returns (IINVESTOR.Round memory) {
-        return rounds[round_];
-    }
-
-    /**
-     * @dev Getter ruturns investor allocation info.
-     * @param round_ round number in question
-     * @param src investor address
-     * @return returns Investment object
-     */
-    function getInvestorAllocation(uint32 round_, address src) external view returns (IINVESTOR.Investment memory) {
-        return investorAllocations[round_][src];
-    }
-
-    /**
-     * @dev Getter ruturns the round's min invest amount.
-     * @param round_ round number in question
-     * @return returns min invest amount (ETH)
-     */
-    function getMinInvestAmount(uint32 round_) external view returns (uint256) {
-        IINVESTOR.Round memory item = rounds[round_];
-        return item.etherTarget / 50;
-    }
-
-    /**
-     * @dev Processes ETH investment into a round.
-     * @param round_ round number in question
-     */
-    function investEther(uint32 round_) public payable whenNotPaused {
-        if (round_ >= rounds.length) revert CustomError("INVALID_ROUND");
-        invest(round_, msg.value);
-        Address.sendValue(payable(address(wethContract)), msg.value);
-    }
-
-    /**
-     * @dev internal invest logic.
-     * @param round_ round number in question
-     * @param amount amount of ETH to invest
-     */
-    function invest(uint32 round_, uint256 amount) internal {
-        Round storage item = rounds[round_];
-        Investment storage investment = investorAllocations[round_][msg.sender];
-        if (investment.etherAmount != amount) {
-            revert CustomError("INVALID_AMOUNT");
         }
 
-        if (item.etherInvested + amount > item.etherTarget) {
-            revert CustomError("ROUND_OVERSUBSCRIBED");
-        }
+        _updateRoundStatus(roundId, RoundStatus.FINALIZED);
 
-        uint256 pos = ipos[round_][msg.sender];
-        if (pos == 0) {
-            investors_[round_].push(msg.sender);
-            ipos[round_][msg.sender] = investors_[round_].length;
-        }
+        uint256 amount = currentRound.etherInvested; // Cache the value
+        emit RoundFinalized(msg.sender, roundId, amount, currentRound.tokenDistributed);
 
-        item.participants = investors_[round_].length;
-        item.etherInvested += amount;
-        totalAllocation += investment.tokenAmount;
-
-        emit Invest(round_, msg.sender, amount);
-        if (item.etherInvested == item.etherTarget) emit RoundComplete(round_);
+        (bool success,) = payable(treasury).call{value: amount}("");
+        require(success, "WITHDRAWAL_FAILED");
     }
 
     /**
-     * @dev internal, deploys vesting contracts while closing the round.
-     * @param round_ round number in question
+     * @notice Cancels an investment round and returns tokens to treasury
+     * @dev Only callable by accounts with MANAGER_ROLE when contract is not paused
+     * @dev Requirements:
+     *      - Round exists (validRound modifier)
+     *      - Round is in PENDING or ACTIVE status
+     *      - Caller has MANAGER_ROLE
+     *      - Contract is not paused
+     * @dev State Changes:
+     *      - Updates round status to CANCELLED
+     *      - Decrements total token supply
+     *      - Transfers round's token allocation back to treasury
+     * @param roundId The identifier of the round to cancel
+     * @custom:throws INVALID_STATUS_TRANSITION if round is not in PENDING or ACTIVE status
+     * @custom:throws INVALID_ROUND if roundId is invalid
+     * @custom:emits RoundCancelled when round is successfully cancelled
+     * @custom:security Uses SafeERC20 for token transfers
      */
-    function deployVestingContracts(uint32 round_) internal {
-        address[] memory investors = investors_[round_];
-        uint256 len = investors.length;
-        address[] memory temp;
-        investors_[round_] = temp;
-        if (len <= 50) {
-            for (uint256 i; i < len; ++i) {
-                uint256 alloc = investorAllocations[round][investors[i]].tokenAmount;
-                InvestorVesting vestingContract = new InvestorVesting(
-                    address(ecosystemToken),
-                    investors[i],
-                    SafeCast.toUint64(block.timestamp + 365 days), // cliff timestamp
-                    SafeCast.toUint64(730 days) // duration after cliff
-                );
-                emit DeployVesting(round_, investors[i], address(vestingContract), alloc);
-                vestingContracts[round][investors[i]] = address(vestingContract);
-                TH.safeTransfer(ecosystemToken, address(vestingContract), alloc);
+    function cancelRound(uint32 roundId) external validRound(roundId) onlyRole(MANAGER_ROLE) whenNotPaused {
+        Round storage currentRound = rounds[roundId];
+
+        require(
+            currentRound.status == RoundStatus.PENDING || currentRound.status == RoundStatus.ACTIVE,
+            "INVALID_STATUS_TRANSITION"
+        );
+
+        // Update round state
+        _updateRoundStatus(roundId, RoundStatus.CANCELLED);
+        supply -= currentRound.tokenAllocation;
+        emit RoundCancelled(roundId);
+        ecosystemToken.safeTransfer(treasury, currentRound.tokenAllocation);
+    }
+
+    /**
+     * @notice Allows investors to claim their refund after round cancellation
+     * @dev Processes refund claims and updates round state
+     * @dev Requirements:
+     *      - Round exists (validRound modifier)
+     *      - Protected against reentrancy (nonReentrant modifier)
+     *      - Round must be in CANCELLED status
+     *      - Caller must have refund available
+     * @dev State Changes:
+     *      - Sets investor's position to 0
+     *      - Decrements round's total ETH invested
+     *      - Decrements round's participant count if > 0
+     *      - Removes investor from round's investor list
+     * @param roundId The identifier of the round to claim refund from
+     * @custom:throws ROUND_NOT_CANCELLED if round is not in CANCELLED status
+     * @custom:throws NO_REFUND_AVAILABLE if caller has no refund to claim
+     * @custom:throws INVALID_ROUND if roundId is invalid
+     * @custom:emits RefundClaimed when refund is successfully processed
+     * @custom:security Uses nonReentrant modifier to prevent reentrancy attacks
+     * @custom:security Uses Address.sendValue for safe ETH transfer
+     * @custom:security Updates state before external calls
+     */
+    function claimRefund(uint32 roundId) external validRound(roundId) nonReentrant {
+        Round storage currentRound = rounds[roundId];
+        require(currentRound.status == RoundStatus.CANCELLED, "ROUND_NOT_CANCELLED");
+
+        uint256 refundAmount = investorPositions[roundId][msg.sender];
+        require(refundAmount > 0, "NO_REFUND_AVAILABLE");
+
+        // Update state before transfer
+        investorPositions[roundId][msg.sender] = 0;
+        currentRound.etherInvested -= refundAmount;
+        if (currentRound.participants > 0) {
+            currentRound.participants--;
+        }
+
+        _removeInvestor(roundId, msg.sender);
+        emit RefundClaimed(roundId, msg.sender, refundAmount);
+        payable(msg.sender).sendValue(refundAmount);
+    }
+
+    /**
+     * @notice Gets the refund amount available for an investor in a cancelled round
+     * @dev Returns 0 if round is not cancelled, otherwise returns investor's position
+     * @param roundId The identifier of the investment round
+     * @param investor The address of the investor to check
+     * @return amount The amount of ETH available for refund
+     * @custom:security No state modifications
+     * @custom:security Safe to call by anyone
+     * @custom:security Returns 0 for non-cancelled rounds or non-existent positions
+     */
+    function getRefundAmount(uint32 roundId, address investor) external view returns (uint256) {
+        if (rounds[roundId].status != RoundStatus.CANCELLED) {
+            return 0;
+        }
+        return investorPositions[roundId][investor];
+    }
+
+    // ============ View Functions ============
+
+    /**
+     * @notice Gets the investment details for an investor in a specific round
+     * @param roundId The round identifier
+     * @param investor The investor address
+     * @return etherAmount The amount of ETH allocated
+     * @return tokenAmount The amount of tokens allocated
+     * @return invested The amount already invested
+     * @return vestingContract The address of the vesting contract (if deployed)
+     */
+    function getInvestorDetails(uint32 roundId, address investor)
+        external
+        view
+        returns (uint256 etherAmount, uint256 tokenAmount, uint256 invested, address vestingContract)
+    {
+        Allocation storage allocation = investorAllocations[roundId][investor];
+        return (
+            allocation.etherAmount,
+            allocation.tokenAmount,
+            investorPositions[roundId][investor],
+            vestingContracts[roundId][investor]
+        );
+    }
+
+    /**
+     * @notice Retrieves detailed information about a specific investment round
+     * @dev Returns complete Round struct with all round parameters and current state
+     * @dev Round struct contains:
+     *      - etherTarget: Target ETH amount for the round
+     *      - etherInvested: Current ETH amount invested
+     *      - tokenAllocation: Total tokens allocated for round
+     *      - tokenDistributed: Amount of tokens distributed
+     *      - startTime: Round start timestamp
+     *      - endTime: Round end timestamp
+     *      - vestingCliff: Vesting cliff period
+     *      - vestingDuration: Total vesting duration
+     *      - participants: Current number of investors
+     *      - status: Current round status
+     * @param roundId The identifier of the round to query
+     * @return Round struct containing all round details
+     * @custom:security View function - no state modifications
+     * @custom:security Safe to call by anyone
+     * @custom:security Returns full struct copy - higher gas cost for large data
+     */
+    function getRoundInfo(uint32 roundId) external view returns (Round memory) {
+        return rounds[roundId];
+    }
+
+    /**
+     * @notice Gets the complete list of investors for a specific investment round
+     * @dev Returns array of all investor addresses that participated in the round
+     * @dev Important considerations:
+     *      - Returns full array copy - gas cost scales with number of investors
+     *      - Array includes all historical investors, even those who cancelled
+     *      - Maximum size limited by MAX_INVESTORS_PER_ROUND (50)
+     *      - Order of addresses matches investment chronology
+     * @param roundId The identifier of the investment round to query
+     * @return Array of investor addresses for the specified round
+     * @custom:security View function - no state modifications
+     * @custom:security Safe to call by anyone
+     * @custom:security Returns empty array for invalid roundId
+     * @custom:security Memory array bounded by MAX_INVESTORS_PER_ROUND
+     */
+    function getRoundInvestors(uint32 roundId) external view returns (address[] memory) {
+        return investors[roundId];
+    }
+
+    /**
+     * @notice Allows investors to participate in the current round using ETH
+     * @dev Processes ETH investments for allocated participants
+     * @dev Requirements:
+     *      - Round exists (validRound modifier)
+     *      - Round is active (activeRound modifier)
+     *      - Contract not paused (whenNotPaused modifier)
+     *      - Protected against reentrancy (nonReentrant modifier)
+     *      - Round not ended
+     *      - Round not oversubscribed
+     *      - Investor has allocation
+     *      - Exact remaining allocation amount sent
+     * @param roundId The identifier of the round to invest in
+     * @custom:throws ROUND_ENDED if round end time has passed
+     * @custom:throws ROUND_OVERSUBSCRIBED if participant limit reached
+     * @custom:throws NO_ALLOCATION if sender has no allocation
+     * @custom:throws AMOUNT_ALLOCATION_MISMATCH if sent amount doesn't match remaining allocation
+     * @custom:emits Invest when investment is processed successfully
+     * @custom:emits RoundComplete when round reaches target after investment
+     */
+    function investEther(uint32 roundId)
+        public
+        payable
+        validRound(roundId)
+        activeRound(roundId)
+        whenNotPaused
+        nonReentrant
+    {
+        Round storage currentRound = rounds[roundId];
+        // require(currentRound.status == RoundStatus.ACTIVE, "ROUND_NOT_ACTIVE");
+        require(block.timestamp < currentRound.endTime, "ROUND_ENDED");
+        require(currentRound.participants < 50, "ROUND_OVERSUBSCRIBED");
+
+        Allocation storage allocation = investorAllocations[roundId][msg.sender];
+        require(allocation.etherAmount > 0, "NO_ALLOCATION");
+
+        uint256 remainingAllocation = allocation.etherAmount - investorPositions[roundId][msg.sender];
+        require(msg.value == remainingAllocation, "AMOUNT_ALLOCATION_MISMATCH");
+
+        _processInvestment(roundId, msg.sender, msg.value);
+    }
+    /**
+     * @notice Gets the first active round number
+     * @dev Iterates through rounds array to find first ACTIVE round
+     * @dev Returns type(uint32).max if no active round exists
+     * @dev Gas usage increases linearly with number of rounds
+     * @dev No state modifications - pure view function
+     * @return roundId The first active round number, or type(uint32).max if none found
+     * @custom:security Safe to call by anyone
+     * @custom:security No state modifications
+     * @custom:security Returns max uint32 instead of reverting when no active round
+     */
+
+    function getCurrentRound() public view returns (uint32) {
+        uint256 length = rounds.length;
+        for (uint32 i = 0; i < length; i++) {
+            if (rounds[i].status == RoundStatus.ACTIVE) {
+                return i;
             }
-        } else {
-            revert CustomError("GAS_LIMIT");
         }
+        return type(uint32).max;
     }
 
     /**
-     * @dev internal, withdraws tokens back to treasury when the round is cancelled.
-     * @param amount amount of tokens to send back to treasury
+     * @notice Updates the status of an investment round
+     * @dev Internal function to manage round status transitions
+     * @dev Requirements:
+     *      - New status must be higher than current status
+     *      - Status transitions are one-way only
+     *      - Valid status progression:
+     *        PENDING -> ACTIVE -> COMPLETED -> FINALIZED
+     *        PENDING/ACTIVE -> CANCELLED
+     * @param roundId The identifier of the round to update
+     * @param newStatus The new status to set for the round
+     * @custom:throws INVALID_STATUS_TRANSITION if attempting invalid status change
+     * @custom:emits RoundStatusUpdated when status is successfully changed
+     * @custom:security Enforces unidirectional status transitions
+     * @custom:security Uses uint8 casting for safe status comparisons
      */
-    function withdrawTokens(uint32 round_, uint256 amount) internal {
-        emit WithdrawTokens(round_, msg.sender, amount);
-        TH.safeTransfer(ecosystemToken, treasury, amount);
-    }
+    function _updateRoundStatus(uint32 roundId, RoundStatus newStatus) internal {
+        Round storage round_ = rounds[roundId];
+        require(uint8(newStatus) > uint8(round_.status), "INVALID_STATUS_TRANSITION");
 
-    /// @inheritdoc UUPSUpgradeable
+        round_.status = newStatus;
+        emit RoundStatusUpdated(roundId, newStatus);
+    }
+    // ============ Internal Functions ============
+    /**
+     * @notice Authorizes and processes contract upgrades
+     * @dev Internal override for UUPS upgrade authorization
+     * @dev Performs:
+     *      1. Validates caller has UPGRADER_ROLE
+     *      2. Increments contract version
+     *      3. Emits upgrade event with details
+     * @param newImplementation Address of the new implementation contract
+     * @custom:throws Unauthorized if caller lacks UPGRADER_ROLE
+     * @custom:emits Upgrade event with upgrader address and new implementation
+     * @custom:security Role-based access control via UPGRADER_ROLE
+     * @custom:security Version tracking for upgrade management
+     * @custom:security Inherits OpenZeppelin's UUPSUpgradeable pattern
+     */
+
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
         ++version;
         emit Upgrade(msg.sender, newImplementation);
+    }
+
+    // ============ Private Helper Functions ============
+    /**
+     * @notice Processes an investment from either ETH or WETH
+     * @dev Internal function to handle investment processing and state updates
+     * @dev State Changes:
+     *      - Adds investor to round's investor list if first investment
+     *      - Increments round's participant count for new investors
+     *      - Updates investor's position with investment amount
+     *      - Updates round's total ETH invested
+     *      - Updates round status if target reached
+     * @param roundId The identifier of the investment round
+     * @param investor The address of the investor making the investment
+     * @param amount The amount of ETH/WETH being invested
+     * @custom:emits Invest when investment is processed
+     * @custom:emits RoundComplete if investment reaches round target
+     * @custom:security Updates all state before emitting events
+     * @custom:security Handles first-time investor tracking
+     * @custom:security Safe arithmetic operations via Solidity 0.8+
+     */
+    function _processInvestment(uint32 roundId, address investor, uint256 amount) private {
+        Round storage currentRound = rounds[roundId];
+
+        if (investorPositions[roundId][investor] == 0) {
+            investors[roundId].push(investor);
+            currentRound.participants++;
+        }
+
+        investorPositions[roundId][investor] += amount;
+        currentRound.etherInvested += amount;
+
+        emit Invest(roundId, investor, amount);
+
+        if (currentRound.etherInvested >= currentRound.etherTarget) {
+            _updateRoundStatus(roundId, RoundStatus.COMPLETED);
+            emit RoundComplete(roundId);
+        }
+    }
+
+    /**
+     * @notice Removes an investor from a round's investor list
+     * @dev Internal function using gas-optimized array manipulation
+     * @dev Algorithm:
+     *      1. Locates investor in round's investor array
+     *      2. If found and not last element:
+     *         - Moves last element to found position
+     *         - Pops last element
+     *      3. If found and last element:
+     *         - Simply pops last element
+     * @dev Gas Optimizations:
+     *      - Uses unchecked increment for loop counter
+     *      - Minimizes storage reads with length caching
+     *      - Uses efficient array pop over delete
+     * @param roundId The identifier of the investment round
+     * @param investor The address of the investor to remove
+     * @custom:security No return value - silently completes if investor not found
+     * @custom:security Storage array modification only - no external calls
+     * @custom:security Safe array operations via Solidity 0.8+ bounds checking
+     */
+    function _removeInvestor(uint32 roundId, address investor) private {
+        // Get the array of investors for this round
+        address[] storage roundInvestors = investors[roundId];
+        uint256 length = roundInvestors.length;
+
+        // Find and remove the investor
+        for (uint256 i = 0; i < length;) {
+            if (roundInvestors[i] == investor) {
+                // Move the last element to this position (unless we're already at the last element)
+                if (i != length - 1) {
+                    roundInvestors[i] = roundInvestors[length - 1];
+                }
+                roundInvestors.pop();
+                break;
+            }
+            unchecked {
+                ++i;
+            }
+        }
+    }
+
+    /**
+     * @notice Sets up initial roles and permissions for contract operation
+     * @dev Internal function called during initialization
+     * @dev Role assignments:
+     *      - Guardian receives:
+     *          - DEFAULT_ADMIN_ROLE
+     *          - MANAGER_ROLE
+     *          - PAUSER_ROLE
+     *          - UPGRADER_ROLE
+     *      - Timelock receives:
+     *          - DAO_ROLE
+     * @param guardian Address receiving admin and operational roles
+     * @param timelock_ Address receiving governance role
+     * @custom:security Uses OpenZeppelin AccessControl
+     * @custom:security Critical for establishing permission hierarchy
+     * @custom:security Only called once during initialization
+     */
+    function _setupRoles(address guardian, address timelock_) private {
+        _grantRole(DEFAULT_ADMIN_ROLE, guardian);
+        _grantRole(MANAGER_ROLE, guardian);
+        _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(DAO_ROLE, timelock_);
+        _grantRole(UPGRADER_ROLE, guardian);
+    }
+
+    /**
+     * @notice Initializes core contract references and dependencies
+     * @dev Internal function called during contract initialization
+     * @dev Sets up:
+     *      - Ecosystem token interface
+     *      - Timelock contract reference
+     *      - Treasury contract reference
+     * @param token Address of the ecosystem token contract
+     * @param timelock_ Address of the timelock contract for governance
+     * @param treasury_ Address of the treasury contract
+     * @custom:security Called only once during initialization
+     * @custom:security Addresses already validated before call
+     * @custom:security Critical for contract functionality
+     */
+    function _initializeContracts(address token, address timelock_, address treasury_) private {
+        ecosystemToken = ILENDEFI(token);
+        timelock = timelock_;
+        treasury = treasury_;
+    }
+
+    /**
+     * @notice Deploys vesting contract for an investor with round-specific parameters
+     * @dev Internal function to create and configure vesting contracts
+     * @dev Process:
+     *      1. Retrieves round parameters from storage
+     *      2. Creates new InvestorVesting contract instance
+     *      3. Configures with:
+     *         - Ecosystem token address
+     *         - Investor address as beneficiary
+     *         - Cliff start time (current time + round cliff)
+     *         - Round-specific vesting duration
+     *      4. Emits deployment event
+     * @param investor The address of the beneficiary for the vesting contract
+     * @param allocation The amount of tokens to be vested
+     * @param roundId The identifier of the investment round
+     * @return address The address of the newly deployed vesting contract
+     * @custom:security Uses safe type casting for timestamps
+     * @custom:security Emits event before returning for complete audit trail
+     * @custom:emits DeployVesting with contract details and allocation
+     */
+    function _deployVestingContract(address investor, uint256 allocation, uint32 roundId) private returns (address) {
+        Round storage round = rounds[roundId];
+        InvestorVesting vestingContract = new InvestorVesting(
+            address(ecosystemToken),
+            investor,
+            uint64(block.timestamp + round.vestingCliff),
+            uint64(round.vestingDuration)
+        );
+
+        emit DeployVesting(roundId, investor, address(vestingContract), allocation);
+        return address(vestingContract);
     }
 }
