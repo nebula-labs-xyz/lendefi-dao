@@ -1,17 +1,60 @@
-// SPDX-License-Identifier: MIT
-pragma solidity ^0.8.23;
+// SPDX-License-Identifier: BUSL-1.1
+pragma solidity 0.8.23;
 
 import "../BasicDeploy.sol"; // solhint-disable-line
+// import {console2} from "forge-std/console2.sol";
 import {InvestmentManager} from "../../contracts/ecosystem/InvestmentManager.sol";
-import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
-import {IINVESTOR} from "../../contracts/interfaces/IInvestmentManager.sol";
+import {IINVMANAGER} from "../../contracts/interfaces/IInvestmentManager.sol";
+import {InvestorVesting} from "../../contracts/ecosystem/InvestorVesting.sol";
 
 contract InvestmentManagerTest is BasicDeploy {
-    uint256 internal vmprimer = 365 days;
-    InvestmentManager internal imInstance;
+    address public constant ADMIN = address(0x1);
+    address public constant MANAGER = address(0x2);
+    address public constant TREASURY = address(0x3);
+    address public constant TIMELOCK = address(0x4);
 
-    event EtherReleased(address indexed to, uint256 amount);
-    event ERC20Released(address indexed token, address indexed to, uint256 amount);
+    uint256 public constant MIN_DURATION = 5 days;
+    uint256 private constant MAX_DURATION = 90 days;
+    uint256 public constant TEST_SUPPLY = 1_000_000e18;
+
+    // Test addresses
+    address public constant INVESTOR = address(0x123);
+    address public constant NON_PAUSER = address(0x456);
+
+    // Test constants
+    uint256 public constant INVESTMENT_AMOUNT = 5 ether;
+    uint256 public constant TOKEN_ALLOCATION = 100e18;
+
+    InvestmentManager public manager;
+
+    // Events
+    event Received(address indexed src, uint256 amount);
+    event Paused(address account);
+    event Unpaused(address account);
+    event Invest(uint32 indexed roundId, address indexed investor, uint256 amount);
+    event CreateRound(uint32 indexed roundId, uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc);
+    event RoundStatusUpdated(uint32 indexed roundId, IINVMANAGER.RoundStatus status);
+    event CancelInvestment(uint32 indexed roundId, address indexed investor, uint256 amount);
+    event InvestorAllocated(uint32 indexed roundId, address indexed investor, uint256 ethAmount, uint256 tokenAmount);
+    event InvestorAllocationRemoved(
+        uint32 indexed roundId, address indexed investor, uint256 ethAmount, uint256 tokenAmount
+    );
+    event RoundCancelled(uint32 indexed roundId);
+    event RefundClaimed(uint32 indexed roundId, address indexed investor, uint256 amount);
+    event DeployVesting(uint32 indexed roundId, address indexed investor, address vestingContract, uint256 amount);
+    event RoundFinalized(
+        address indexed caller, uint32 indexed roundId, uint256 totalEthRaised, uint256 totalTokensDistributed
+    );
+
+    receive() external payable {
+        if (msg.sender == address(manager)) {
+            uint32 roundId = manager.getCurrentRound();
+            bytes memory expError = abi.encodeWithSignature("ReentrancyGuardReentrantCall()");
+            vm.prank(managerAdmin);
+            vm.expectRevert(expError);
+            manager.cancelInvestment(roundId);
+        }
+    }
 
     function setUp() public {
         deployComplete();
@@ -26,857 +69,2399 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(treasuryBal, 28_000_000 ether);
         assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
 
-        usdcInstance = new USDC();
-        wethInstance = new WETH9();
         // deploy Investment Manager
         bytes memory data = abi.encodeCall(
             InvestmentManager.initialize,
-            (
-                address(tokenInstance),
-                address(timelockInstance),
-                address(treasuryInstance),
-                address(wethInstance),
-                guardian
-            )
+            (address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian)
         );
         address payable proxy = payable(Upgrades.deployUUPSProxy("InvestmentManager.sol", data));
-        imInstance = InvestmentManager(proxy);
+        manager = InvestmentManager(proxy);
         address implementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(imInstance) == implementation);
+        assertFalse(address(manager) == implementation);
 
         treasuryInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
-        //imInstance.grantRole(MANAGER_ROLE, address(guardian));//
         vm.stopPrank();
     }
 
-    // Test: RevertInitialize
-    function testRevertInitialize() public {
+    // ============ Reetrancy Test ============
+    function testRevertReentrancyOnCancelInvestment() public {
+        address investor = address(this);
+        vm.deal(investor, INVESTMENT_AMOUNT);
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, INVESTMENT_AMOUNT, 100e18);
+
+        vm.prank(investor);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+
+        vm.expectEmit(true, true, false, true);
+        emit CancelInvestment(roundId, investor, INVESTMENT_AMOUNT);
+
+        uint256 balanceBefore = investor.balance;
+
+        vm.prank(investor);
+        manager.cancelInvestment(roundId);
+
+        assertEq(investor.balance, balanceBefore + INVESTMENT_AMOUNT);
+        (,, uint256 amount,) = manager.getInvestorDetails(roundId, investor);
+        assertEq(amount, 0);
+    }
+    // ============ Basic Functionality Tests ============
+
+    function testPauseByPauser() public {
+        vm.startPrank(guardian);
+
+        // Expect Paused event
+        vm.expectEmit(true, false, false, true);
+        emit Paused(guardian);
+
+        manager.pause();
+        assertTrue(manager.paused());
+        vm.stopPrank();
+    }
+
+    function testUnpauseByPauser() public {
+        vm.startPrank(guardian);
+        manager.pause();
+        assertTrue(manager.paused());
+
+        // Expect Unpaused event
+        vm.expectEmit(true, false, false, true);
+        emit Unpaused(guardian);
+
+        manager.unpause();
+        assertFalse(manager.paused());
+        vm.stopPrank();
+    }
+
+    function testRevertPauseByNonPauser() public {
+        vm.prank(INVESTOR);
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", INVESTOR, PAUSER_ROLE);
+        vm.expectRevert(expError);
+        manager.pause();
+    }
+
+    function testRevertUnpauseByNonPauser() public {
+        vm.prank(guardian);
+        manager.pause();
+
+        vm.prank(INVESTOR);
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", INVESTOR, PAUSER_ROLE);
+        vm.expectRevert(expError);
+        manager.unpause();
+    }
+
+    function testInvestmentWhilePaused() public {
+        // Setup round and allocation
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, 100e18);
+
+        // Pause contract
+        vm.prank(guardian);
+        manager.pause();
+
+        // Try to invest while paused
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.prank(INVESTOR);
+        vm.expectRevert(expError); // contract paused
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function testInvestmentAfterUnpause() public {
+        // Setup round and allocation
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, 100e18);
+
+        // Pause and then unpause
+        vm.startPrank(guardian);
+        manager.pause();
+        manager.unpause();
+        vm.stopPrank();
+
+        // Investment should succeed
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+        vm.prank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+
+        // Verify investment
+        (,, uint256 invested,) = manager.getInvestorDetails(roundId, INVESTOR);
+        assertEq(invested, INVESTMENT_AMOUNT);
+    }
+
+    function testCreateRound() public {
+        uint64 start = uint64(block.timestamp + 1 days);
+        uint64 duration = uint64(7 days);
+        uint256 ethTarget = 100 ether;
+        uint256 tokenAlloc = 1000e18;
+        uint32 roundId = _createTestRound(start, duration, ethTarget, tokenAlloc);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(round.etherTarget, ethTarget);
+        assertEq(round.tokenAllocation, tokenAlloc);
+        assertEq(round.startTime, start);
+        assertEq(round.endTime, start + duration);
+        assertEq(round.etherInvested, 0);
+        assertEq(round.tokenDistributed, 0);
+        assertEq(round.participants, 0);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+    }
+
+    // ============ Access Control Tests ============
+
+    function testOnlyManagerCanCreateRound() public {
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), address(this), DAO_ROLE
+            )
+        );
+        manager.createRound(uint64(block.timestamp + 1 days), uint64(7 days), 100 ether, 1000e18, 365 days, 730 days);
+    }
+
+    // ============ Input Validation Tests ============
+
+    function testCannotCreateRoundWithPastStartTime() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert("INVALID_START_TIME");
+        manager.createRound(uint64(block.timestamp - 1), uint64(7 days), 100 ether, 1000e18, 365 days, 730 days);
+    }
+
+    function testCannotCreateRoundWithShortDuration() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert("INVALID_DURATION");
+        manager.createRound(
+            uint64(block.timestamp + 1 days), uint64(MIN_DURATION - 1), 100 ether, 1000e18, 365 days, 730 days
+        );
+    }
+
+    function testCannotCreateRoundWithZeroTarget() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert("INVALID_ETH_TARGET");
+        manager.createRound(uint64(block.timestamp + 1 days), uint64(7 days), 0, 1000e18, 365 days, 730 days);
+    }
+
+    function testCannotCreateRoundWithZeroAllocation() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert("INVALID_TOKEN_ALLOCATION");
+        manager.createRound(uint64(block.timestamp + 1 days), uint64(7 days), 100 ether, 0, 365 days, 730 days);
+    }
+
+    function testCannotCreateRoundWithInsufficientSupply() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert("INSUFFICIENT_SUPPLY");
+        manager.createRound(
+            uint64(block.timestamp + 1 days), uint64(7 days), 100 ether, TEST_SUPPLY + 1, 365 days, 730 days
+        );
+    }
+
+    // ============ Fuzz Tests ============
+
+    function testFuzz_CreateRound(uint64 startOffset, uint64 duration, uint256 ethTarget, uint256 tokenAlloc) public {
+        // Bound inputs to reasonable ranges
+        startOffset = uint64(bound(startOffset, 1 hours, 365 days));
+        duration = uint64(bound(duration, MIN_DURATION, MAX_DURATION));
+        ethTarget = bound(ethTarget, 0.1 ether, 100_000 ether);
+        tokenAlloc = bound(tokenAlloc, 1e18, TEST_SUPPLY);
+
+        uint64 start = uint64(block.timestamp) + startOffset;
+
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+        manager.createRound(start, duration, ethTarget, tokenAlloc, 365 days, 730 days);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(0);
+
+        assertEq(round.etherTarget, ethTarget);
+        assertEq(round.tokenAllocation, tokenAlloc);
+        assertEq(round.startTime, start);
+        assertEq(round.endTime, start + duration);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+    }
+
+    // ============ Property-Based Tests ============
+
+    function testProperty_RoundInvariants(uint64 startOffset, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
+        public
+    {
+        // Bound inputs
+        startOffset = uint64(bound(startOffset, 1 hours, 365 days));
+        duration = uint64(bound(duration, MIN_DURATION, MAX_DURATION));
+        ethTarget = bound(ethTarget, 0.1 ether, 100_000 ether);
+        tokenAlloc = bound(tokenAlloc, 1e18, TEST_SUPPLY);
+
+        uint64 start = uint64(block.timestamp) + startOffset;
+
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+        manager.createRound(start, duration, ethTarget, tokenAlloc, 365 days, 730 days);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(0);
+
+        // Property: Round should always have valid timestamps
+        assertTrue(round.endTime > round.startTime);
+        assertTrue(round.startTime >= block.timestamp);
+
+        // Property: Round should have non-zero targets
+        assertTrue(round.etherTarget > 0);
+        assertTrue(round.tokenAllocation > 0);
+
+        // Property: Initial state should be empty
+        assertEq(round.etherInvested, 0);
+        assertEq(round.tokenDistributed, 0);
+        assertEq(round.participants, 0);
+
+        // Property: Status should be PENDING
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+
+        // Property: Supply tracking should be correct
+        assertTrue(manager.supply() >= tokenAlloc);
+        assertTrue(tokenInstance.balanceOf(address(manager)) >= manager.supply());
+    }
+
+    // ============ Multiple Rounds Tests ============
+
+    function testCreateMultipleRounds() public {
+        uint64 baseStart = uint64(block.timestamp + 1 days);
+        vm.startPrank(address(timelockInstance));
+
+        for (uint32 i = 0; i < 5; i++) {
+            treasuryInstance.release(address(tokenInstance), address(manager), 1000 ether);
+            manager.createRound(baseStart + uint64(i * 30 days), uint64(7 days), 100 ether, 1000e18, 365 days, 730 days);
+
+            IINVMANAGER.Round memory round = manager.getRoundInfo(i);
+            assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+        }
+    }
+
+    // ============ Activation Tests ============
+
+    function testActivateRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.expectEmit(true, false, false, true);
+        emit RoundStatusUpdated(roundId, IINVMANAGER.RoundStatus.ACTIVE);
+
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.ACTIVE));
+    }
+
+    function testOnlyManagerCanActivate() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), address(this), MANAGER_ROLE
+            )
+        );
+        manager.activateRound(roundId);
+    }
+
+    function testCannotActivateNonPendingRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.startPrank(guardian);
+        manager.activateRound(roundId);
+
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.activateRound(roundId);
+        vm.stopPrank();
+    }
+
+    function testCannotActivateBeforeStartTime() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        vm.expectRevert("ROUND_START_TIME_NOT_REACHED");
+        manager.activateRound(roundId);
+    }
+
+    function testCannotActivateAfterEndTime() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.warp(block.timestamp + 9 days);
+
+        vm.prank(guardian);
+        vm.expectRevert("ROUND_END_TIME_REACHED");
+        manager.activateRound(roundId);
+    }
+
+    // ============ Fuzz Tests ============
+
+    function testFuzz_ActivateRound(
+        uint64 startOffset,
+        uint64 duration,
+        uint256 ethTarget,
+        uint256 tokenAlloc,
+        uint64 activationDelay
+    ) public {
+        startOffset = uint64(bound(startOffset, 1 hours, 30 days));
+        duration = uint64(bound(duration, MIN_DURATION, 90 days));
+        ethTarget = bound(ethTarget, 0.1 ether, 10000 ether);
+        tokenAlloc = bound(tokenAlloc, 1e18, TEST_SUPPLY);
+        activationDelay = uint64(bound(activationDelay, 0, duration));
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + startOffset), duration, ethTarget, tokenAlloc);
+
+        vm.warp(block.timestamp + startOffset + activationDelay);
+
+        if (activationDelay < duration) {
+            vm.prank(guardian);
+            manager.activateRound(roundId);
+
+            IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+            assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.ACTIVE));
+        } else {
+            vm.expectRevert("ROUND_END_TIME_REACHED");
+            vm.prank(guardian);
+            manager.activateRound(roundId);
+        }
+    }
+
+    // ============ Property-Based Tests ============
+
+    function testProperty_ActivationTimeWindow(uint64 activationTime) public {
+        uint64 startTime = uint64(block.timestamp + 1 days);
+        uint64 duration = 7 days;
+        uint32 roundId = _createTestRound(startTime, duration, 100 ether, 1000e18);
+
+        activationTime = uint64(bound(activationTime, block.timestamp, block.timestamp + 30 days));
+        vm.warp(activationTime);
+
+        vm.startPrank(guardian);
+        if (activationTime >= startTime && activationTime < startTime + duration) {
+            manager.activateRound(roundId);
+            IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+            assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.ACTIVE));
+        } else if (activationTime < startTime) {
+            vm.expectRevert("ROUND_START_TIME_NOT_REACHED");
+            manager.activateRound(roundId);
+        } else {
+            vm.expectRevert("ROUND_END_TIME_REACHED");
+            manager.activateRound(roundId);
+        }
+        vm.stopPrank();
+    }
+
+    // ============ Add Investor Allocation Tests ============
+
+    function testAddInvestorAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        address investor = address(0x123);
+        uint256 ethAmount = 10 ether;
+        uint256 tokenAmount = 100e18;
+
+        vm.expectEmit(true, true, false, true);
+        emit InvestorAllocated(roundId, investor, ethAmount, tokenAmount);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, ethAmount, tokenAmount);
+
+        (uint256 allocatedEth, uint256 allocatedTokens,,) = manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, ethAmount);
+        assertEq(allocatedTokens, tokenAmount);
+    }
+
+    function testOnlyAllocatorCanAddAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), address(this), MANAGER_ROLE
+            )
+        );
+        manager.addInvestorAllocation(roundId, address(0x123), 1 ether, 10e18);
+    }
+
+    function testCannotAddAllocationToInvalidRound() public {
+        uint32 invalidRoundId = 999;
+
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND");
+        manager.addInvestorAllocation(invalidRoundId, address(0x123), 1 ether, 10e18);
+    }
+
+    function testCannotAddAllocationToCompletedRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Activate the round
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(guardian);
+        manager.activateRound(roundId);
+        manager.addInvestorAllocation(roundId, alice, 100 ether, 10e18);
+        vm.stopPrank();
+        //complete the round
+        vm.deal(alice, 101 ether);
+        vm.prank(alice);
+        manager.investEther{value: 100 ether}(roundId);
+
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.addInvestorAllocation(roundId, address(0x123), 1 ether, 10e18);
+    }
+
+    function testCannotAddAllocationWithZeroAddress() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_INVESTOR");
+        manager.addInvestorAllocation(roundId, address(0), 1 ether, 10e18);
+    }
+
+    function testCannotAddZeroAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.startPrank(guardian);
+        vm.expectRevert("INVALID_ETH_AMOUNT");
+        manager.addInvestorAllocation(roundId, address(0x123), 0, 10e18);
+
+        vm.expectRevert("INVALID_TOKEN_AMOUNT");
+        manager.addInvestorAllocation(roundId, address(0x123), 1 ether, 0);
+        vm.stopPrank();
+    }
+
+    function testCannotExceedRoundAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.startPrank(guardian);
+        // Try to allocate more than the round's total allocation
+        vm.expectRevert("EXCEEDS_ROUND_ALLOCATION");
+        manager.addInvestorAllocation(roundId, address(0x123), 101 ether, 1001e18);
+        vm.stopPrank();
+    }
+
+    function testAddInvestorAllocationRevertsForExistingAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        vm.startPrank(guardian);
+
+        // First allocation
+        manager.addInvestorAllocation(roundId, alice, 1 ether, 1000e18);
+
+        // Attempt second allocation
+        vm.expectRevert("ALLOCATION_EXISTS");
+        manager.addInvestorAllocation(roundId, alice, 2 ether, 2000e18);
+
+        vm.stopPrank();
+    }
+
+    // ============ Fuzz Tests ============
+
+    function testFuzz_AddInvestorAllocation(address investor, uint256 ethAmount, uint256 tokenAmount) public {
+        // Bound inputs to reasonable ranges and exclude zero address
+        vm.assume(investor != address(0));
+        ethAmount = bound(ethAmount, 0.1 ether, 100 ether);
+        tokenAmount = bound(tokenAmount, 1e18, 1000e18);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 1000 ether, 10000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, ethAmount, tokenAmount);
+
+        (uint256 allocatedEth, uint256 allocatedTokens,,) = manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, ethAmount);
+        assertEq(allocatedTokens, tokenAmount);
+    }
+
+    // ============ Property-Based Tests ============
+
+    function testProperty_AllocationInvariants(uint256 seed, uint256 numInvestors) public {
+        // Bound number of investors to a reasonable range
+        numInvestors = bound(numInvestors, 1, 5);
+
+        // Create round with sufficient capacity
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 1000 ether, 10000e18);
+
+        uint256 totalEthAllocated;
+        uint256 totalTokensAllocated;
+
+        // Use seed to generate deterministic but pseudo-random values
+        uint256 currentSeed = seed;
+
+        vm.startPrank(guardian);
+        for (uint256 i = 0; i < numInvestors; i++) {
+            // Generate pseudo-random investor address (avoiding address(0))
+            address investor = address(uint160(uint256(keccak256(abi.encode(currentSeed, "investor"))) | 0x10));
+
+            // Generate bounded allocation amounts
+            uint256 ethAmount = bound(uint256(keccak256(abi.encode(currentSeed, "eth"))), 0.1 ether, 10 ether);
+            uint256 tokenAmount = bound(uint256(keccak256(abi.encode(currentSeed, "token"))), 1e18, 100e18);
+
+            // Update seed for next iteration
+            currentSeed = uint256(keccak256(abi.encode(currentSeed, "next")));
+
+            // Skip if allocation would exceed round limits
+            if (totalEthAllocated + ethAmount > 1000 ether || totalTokensAllocated + tokenAmount > 10000e18) {
+                continue;
+            }
+
+            // Add allocation
+            manager.addInvestorAllocation(roundId, investor, ethAmount, tokenAmount);
+
+            totalEthAllocated += ethAmount;
+            totalTokensAllocated += tokenAmount;
+
+            // Verify individual allocation
+            (uint256 allocatedEth, uint256 allocatedTokens,,) = manager.getInvestorDetails(roundId, investor);
+            assertEq(allocatedEth, ethAmount);
+            assertEq(allocatedTokens, tokenAmount);
+        }
+        vm.stopPrank();
+
+        // Verify round totals and invariants
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertTrue(totalEthAllocated <= round.etherTarget);
+        assertTrue(totalTokensAllocated <= round.tokenAllocation);
+        assertTrue(round.participants <= numInvestors);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+    }
+
+    // ============ Invest Ether Tests ============
+
+    function testInvestEther() public {
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Add allocation
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.expectEmit(true, true, false, true);
+        emit Invest(roundId, investor, 10 ether);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        (uint256 allocatedEth, uint256 allocatedTokens, uint256 invested,) =
+            manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 10 ether);
+        assertEq(allocatedTokens, 100e18);
+        assertEq(invested, 10 ether);
+    }
+
+    function testCannotInvestWithoutAllocation() public {
+        address investor = address(0x123);
+        vm.deal(investor, 5 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        vm.expectRevert("NO_ALLOCATION");
+        manager.investEther{value: 1 ether}(roundId);
+    }
+
+    function testCannotInvestBeforeActivation() public {
+        address investor = address(0x123);
+        vm.deal(investor, 5 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(investor);
+        vm.expectRevert("ROUND_NOT_ACTIVE");
+        manager.investEther{value: 1 ether}(roundId);
+    }
+
+    function testCannotInvestAfterEnd() public {
+        address investor = address(0x123);
+        vm.deal(investor, 5 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.warp(block.timestamp + 8 days);
+
+        vm.prank(investor);
+        vm.expectRevert("ROUND_ENDED");
+        manager.investEther{value: 1 ether}(roundId);
+    }
+
+    function testCannotExceedInvestmentAllocation() public {
+        address investor = address(0x123);
+        vm.deal(investor, 15 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        vm.expectRevert("AMOUNT_ALLOCATION_MISMATCH");
+        manager.investEther{value: 11 ether}(roundId);
+    }
+
+    function testInvestEtherRevertsForInvalidRound() public {
+        // Setup
+        uint64 start = uint64(block.timestamp + 1 days);
+        uint64 duration = 30 days;
+        uint256 ethTarget = 100 ether;
+        uint256 tokenAlloc = 1000 ether;
+        uint64 vestingCliff = 90 days;
+        uint64 vestingDuration = 365 days;
+
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+        manager.createRound(start, duration, ethTarget, tokenAlloc, vestingCliff, vestingDuration);
+        vm.stopPrank();
+
+        // Test invalid round ID
+        vm.deal(alice, 1 ether);
+        vm.startPrank(alice);
+        vm.expectRevert("INVALID_ROUND");
+        manager.investEther{value: 1 ether}(999);
+        vm.stopPrank();
+    }
+
+    function testFuzz_InvestEther(uint256 investAmount) public {
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        investAmount = bound(investAmount, 0.1 ether, 10 ether);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, investAmount, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        if (investAmount <= 10 ether) {
+            vm.prank(investor);
+            manager.investEther{value: investAmount}(roundId);
+
+            (,, uint256 invested,) = manager.getInvestorDetails(roundId, investor);
+            assertEq(invested, investAmount);
+        } else {
+            vm.prank(investor);
+            vm.expectRevert("AMOUNT_ALLOCATION_MISMATCH");
+            manager.investEther{value: investAmount}(roundId);
+        }
+    }
+
+    function testProperty_InvestmentInvariants() public {
+        // Setup
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        // Initial state check
+        IINVMANAGER.Round memory roundBefore = manager.getRoundInfo(roundId);
+        uint256 investorBalanceBefore = INVESTOR.balance;
+
+        // Make investment
+        vm.prank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+
+        // Cancel investment
+        vm.prank(INVESTOR);
+        manager.cancelInvestment(roundId);
+
+        // Post-state checks
+        IINVMANAGER.Round memory roundAfter = manager.getRoundInfo(roundId);
+        (,, uint256 invested,) = manager.getInvestorDetails(roundId, INVESTOR);
+
+        // Verify invariants
+        assertEq(invested, 0, "Investment position should be zero after cancellation");
+        assertEq(roundAfter.etherInvested, 0, "Round ETH total should be zero after cancellation");
+        assertEq(roundAfter.participants, 0, "Participant count should be zero after cancellation");
+        assertEq(INVESTOR.balance, investorBalanceBefore, "Investor balance should be restored");
+        assertEq(roundAfter.tokenDistributed, 0, "No tokens should be distributed");
+        assertEq(uint8(roundAfter.status), uint8(roundBefore.status), "Round status should not change");
+    }
+
+    // ============ Cancel Investment Tests ============
+
+    function testCancelInvestment() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Setup allocation and investment
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        // Test cancellation
+        vm.expectEmit(true, true, false, true);
+        emit CancelInvestment(roundId, investor, 10 ether);
+
+        uint256 balanceBefore = investor.balance;
+
+        vm.prank(investor);
+        manager.cancelInvestment(roundId);
+
+        assertEq(investor.balance, balanceBefore + 10 ether);
+
+        (,, uint256 invested,) = manager.getInvestorDetails(roundId, investor);
+        assertEq(invested, 0);
+    }
+
+    function testCancelInvestmentRevertsForInvalidRound() public {
+        // Setup
+        uint64 start = uint64(block.timestamp + 1 days);
+        uint64 duration = 30 days;
+        uint256 ethTarget = 100 ether;
+        uint256 tokenAlloc = 1000 ether;
+        uint64 vestingCliff = 90 days;
+        uint64 vestingDuration = 365 days;
+
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+        manager.createRound(start, duration, ethTarget, tokenAlloc, vestingCliff, vestingDuration);
+        vm.stopPrank();
+
+        // Test invalid round ID
+        vm.expectRevert("INVALID_ROUND");
+        manager.cancelInvestment(999);
+    }
+
+    function testCannotCancelWithoutInvestment() public {
+        address investor = address(0x123);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(investor);
+        vm.expectRevert("NO_INVESTMENT");
+        manager.cancelInvestment(roundId);
+    }
+
+    function testCannotCancelAfterRoundEnd() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        vm.warp(block.timestamp + 8 days);
+
+        vm.prank(investor);
+        vm.expectRevert("ROUND_ENDED");
+        manager.cancelInvestment(roundId);
+    }
+
+    function testFuzz_CancelInvestment(uint256 investAmount) public {
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        investAmount = bound(investAmount, 0.1 ether, 10 ether);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, investAmount, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.startPrank(investor);
+        manager.investEther{value: investAmount}(roundId);
+
+        uint256 balanceBefore = investor.balance;
+        manager.cancelInvestment(roundId);
+        vm.stopPrank();
+
+        assertEq(investor.balance, balanceBefore + investAmount);
+
+        (,, uint256 invested,) = manager.getInvestorDetails(roundId, investor);
+        assertEq(invested, 0);
+    }
+
+    // ============ Finalize Round Tests ============
+
+    function testFinalizeRound() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 10 ether, 100e18);
+
+        // Setup and complete round
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        vm.warp(block.timestamp + 8 days);
+
+        uint256 treasuryBalanceBefore = address(treasuryInstance).balance;
+
+        vm.prank(guardian);
+        manager.finalizeRound(roundId);
+
+        // Verify round status
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.FINALIZED));
+
+        // Verify token distribution
+        (,, uint256 invested, address vestingContract) = manager.getInvestorDetails(roundId, investor);
+        assertNotEq(vestingContract, address(0));
+        assertEq(tokenInstance.balanceOf(vestingContract), 100e18);
+        assertEq(invested, 10 ether);
+
+        // Verify ETH transfer to treasury
+        assertEq(address(treasuryInstance).balance, treasuryBalanceBefore + 10 ether);
+    }
+
+    // [Rest of the test functions remain the same, just update any vestingContract checks to use getInvestorDetails]
+
+    function testCannotFinalizeInvalidRound() public {
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND");
+        manager.finalizeRound(999);
+    }
+
+    function testCannotFinalizeNonCompletedRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 10 ether, 100e18);
+
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.finalizeRound(roundId);
+    }
+
+    function testCannotFinalizeTwice() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 10 ether, 100e18);
+
+        // Setup and complete round
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        vm.warp(block.timestamp + 8 days);
+
+        vm.startPrank(guardian);
+        manager.finalizeRound(roundId);
+
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.finalizeRound(roundId);
+        vm.stopPrank();
+    }
+
+    function testFuzz_FinalizeRound(uint256 ethTarget, uint256 tokenAlloc, uint256 investAmount) public {
+        // Bound inputs to reasonable ranges
+        ethTarget = bound(ethTarget, 1 ether, 1000 ether);
+        tokenAlloc = bound(tokenAlloc, 10e18, 10000e18);
+        investAmount = ethTarget;
+
+        address investor = address(0x123);
+        vm.deal(investor, ethTarget);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, ethTarget, tokenAlloc);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, ethTarget, tokenAlloc);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: investAmount}(roundId);
+
+        vm.warp(block.timestamp + 8 days);
+
+        uint256 treasuryBalanceBefore = address(treasuryInstance).balance;
+
+        vm.prank(guardian);
+        manager.finalizeRound(roundId);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.FINALIZED));
+        assertEq(address(treasuryInstance).balance, treasuryBalanceBefore + investAmount);
+    }
+    // ============ Cancel Round Tests ============
+
+    function testCancelRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        uint256 supplyBefore = manager.supply();
+
+        vm.expectEmit(true, false, false, false);
+        emit RoundStatusUpdated(roundId, IINVMANAGER.RoundStatus.CANCELLED);
+
+        vm.expectEmit(true, false, false, false);
+        emit RoundCancelled(roundId);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.CANCELLED));
+        assertEq(manager.supply(), supplyBefore - 1000e18);
+    }
+
+    function testCancelActiveRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        uint256 supplyBefore = manager.supply();
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.CANCELLED));
+        assertEq(manager.supply(), supplyBefore - 1000e18);
+    }
+
+    function testCannotCancelInvalidRound() public {
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND");
+        manager.cancelRound(999);
+    }
+
+    function testOnlyManagerCanCancel() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), address(this), MANAGER_ROLE
+            )
+        );
+        manager.cancelRound(roundId);
+    }
+
+    function testCannotCancelCompletedRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Complete the round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 100 ether, 1000e18);
+
+        vm.prank(investor);
+        manager.investEther{value: 100 ether}(roundId);
+
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_STATUS_TRANSITION");
+        manager.cancelRound(roundId);
+    }
+
+    function testCannotCancelFinalizedRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Complete and finalize the round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 100 ether, 1000e18);
+
+        vm.prank(investor);
+        manager.investEther{value: 100 ether}(roundId);
+
+        vm.warp(block.timestamp + 8 days);
+        vm.startPrank(guardian);
+        manager.finalizeRound(roundId);
+
+        vm.expectRevert("INVALID_STATUS_TRANSITION");
+        manager.cancelRound(roundId);
+        vm.stopPrank();
+    }
+
+    function testCannotCancelCancelledRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.startPrank(guardian);
+        manager.cancelRound(roundId);
+
+        vm.expectRevert("INVALID_STATUS_TRANSITION");
+        manager.cancelRound(roundId);
+        vm.stopPrank();
+    }
+
+    function testFuzz_CancelRound(uint256 ethTarget, uint256 tokenAlloc) public {
+        ethTarget = bound(ethTarget, 1 ether, 1000 ether);
+        tokenAlloc = bound(tokenAlloc, 10e18, 10000e18);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, ethTarget, tokenAlloc);
+
+        uint256 supplyBefore = manager.supply();
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.CANCELLED));
+        assertEq(manager.supply(), supplyBefore - tokenAlloc);
+    }
+
+    // ============ Claim Refund Tests ============
+
+    function testClaimRefund() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Setup allocation and investment
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        // Cancel round
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        // Test refund claim
+        uint256 balanceBefore = investor.balance;
+
+        vm.expectEmit(true, true, false, true);
+        emit RefundClaimed(roundId, investor, 10 ether);
+
+        vm.prank(investor);
+        manager.claimRefund(roundId);
+
+        assertEq(investor.balance, balanceBefore + 10 ether);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(round.etherInvested, 0);
+        assertEq(round.participants, 0);
+    }
+
+    function testClaimRefundRevertsForInvalidRound() public {
+        // Test invalid round ID
+        vm.expectRevert("INVALID_ROUND");
+        manager.claimRefund(999);
+    }
+
+    function testCannotClaimRefundTwice() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        vm.startPrank(investor);
+        manager.claimRefund(roundId);
+
+        vm.expectRevert("NO_REFUND_AVAILABLE");
+        manager.claimRefund(roundId);
+        vm.stopPrank();
+    }
+
+    function testCannotClaimRefundFromNonCancelledRound() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        vm.prank(investor);
+        vm.expectRevert("ROUND_NOT_CANCELLED");
+        manager.claimRefund(roundId);
+    }
+
+    function testCannotClaimRefundWithoutInvestment() public {
+        address investor = address(0x123);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        vm.prank(investor);
+        vm.expectRevert("NO_REFUND_AVAILABLE");
+        manager.claimRefund(roundId);
+    }
+
+    function testFuzz_ClaimRefund(uint256 investAmount) public {
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        // Bound investment amount
+        investAmount = bound(investAmount, 0.1 ether, 10 ether);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, investAmount, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: investAmount}(roundId);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        uint256 balanceBefore = investor.balance;
+
+        vm.prank(investor);
+        manager.claimRefund(roundId);
+
+        assertEq(investor.balance, balanceBefore + investAmount);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(round.etherInvested, 0);
+    }
+
+    // ============ Get Refund Amount Tests ============
+
+    function testGetRefundAmount() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Setup allocation and investment
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        // Check refund amount before cancellation
+        assertEq(manager.getRefundAmount(roundId, investor), 0);
+
+        // Cancel round and check refund amount
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        assertEq(manager.getRefundAmount(roundId, investor), 10 ether);
+    }
+
+    function testGetRefundAmountAfterClaim() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        vm.prank(investor);
+        manager.claimRefund(roundId);
+
+        assertEq(manager.getRefundAmount(roundId, investor), 0);
+    }
+
+    function testGetRefundAmountNonInvestor() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        assertEq(manager.getRefundAmount(roundId, address(0x123)), 0);
+    }
+
+    function testFuzz_GetRefundAmount(uint256 investAmount) public {
+        address investor = address(0x123);
+        vm.deal(investor, 100 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        investAmount = bound(investAmount, 0.1 ether, 10 ether);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, investAmount, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: investAmount}(roundId);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        assertEq(manager.getRefundAmount(roundId, investor), investAmount);
+    }
+
+    // ============ Get Current Round Tests ============
+
+    function testGetCurrentRound() public {
+        // Create multiple rounds
+        uint32 round0 = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        uint32 round1 = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 200 ether, 2000e18);
+
+        uint32 round2 = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 300 ether, 3000e18);
+
+        // Initially no active rounds
+        assertEq(manager.getCurrentRound(), type(uint32).max);
+
+        // Activate middle round
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(guardian);
+        manager.activateRound(round1);
+
+        assertEq(manager.getCurrentRound(), 1);
+        manager.activateRound(round0);
+        manager.activateRound(round2);
+        assertEq(manager.getCurrentRound(), 0);
+        vm.stopPrank();
+    }
+
+    function testGetCurrentRoundWithMultipleActive() public {
+        // Create and activate multiple rounds
+        uint32 round0 = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        uint32 round1 = _createTestRound(uint64(block.timestamp + 2 days), 7 days, 200 ether, 2000e18);
+
+        // Activate both rounds
+        vm.warp(block.timestamp + 2 days);
+        vm.startPrank(guardian);
+        manager.activateRound(round0);
+        manager.activateRound(round1);
+        vm.stopPrank();
+
+        // Should return first active round
+        assertEq(manager.getCurrentRound(), 0);
+    }
+
+    function testGetCurrentRoundWithNoRounds() public {
+        assertEq(manager.getCurrentRound(), type(uint32).max);
+    }
+
+    function testGetCurrentRoundAfterCompletion() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(guardian);
+        manager.activateRound(roundId);
+        manager.addInvestorAllocation(roundId, alice, 100 ether, 10e18);
+        assertEq(manager.getCurrentRound(), 0);
+        vm.stopPrank();
+        //complete the round
+        vm.deal(alice, 101 ether);
+        vm.prank(alice);
+        manager.investEther{value: 100 ether}(roundId);
+        // Check round complete status
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.COMPLETED));
+        // Finalize round
+        // vm.warp(block.timestamp + 8 days);
+        manager.finalizeRound(roundId);
+
+        // No active rounds after completion
+        assertEq(manager.getCurrentRound(), type(uint32).max);
+    }
+
+    function testGetCurrentRoundAfterCancellation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        assertEq(manager.getCurrentRound(), 0);
+
+        // Cancel round
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        // No active rounds after cancellation
+        assertEq(manager.getCurrentRound(), type(uint32).max);
+    }
+
+    // ============ Get Investor Details Tests ============
+
+    function testGetInvestorDetails() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(
+            uint64(block.timestamp + 1 days),
+            7 days,
+            10 ether, // Set target equal to allocation
+            100e18
+        );
+
+        // Check initial state
+        (uint256 allocatedEth, uint256 allocatedTokens, uint256 invested, address vestingContract) =
+            manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 0);
+        assertEq(allocatedTokens, 0);
+        assertEq(invested, 0);
+        assertEq(vestingContract, address(0));
+
+        // Add allocation
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        (allocatedEth, allocatedTokens, invested, vestingContract) = manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 10 ether);
+        assertEq(allocatedTokens, 100e18);
+        assertEq(invested, 0);
+        assertEq(vestingContract, address(0));
+
+        // Make investment
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId); // Invest full amount to complete round
+
+        (allocatedEth, allocatedTokens, invested, vestingContract) = manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 10 ether);
+        assertEq(allocatedTokens, 100e18);
+        assertEq(invested, 10 ether);
+        assertEq(vestingContract, address(0));
+
+        // Finalize round
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(guardian);
+        manager.finalizeRound(roundId);
+
+        (allocatedEth, allocatedTokens, invested, vestingContract) = manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 10 ether);
+        assertEq(allocatedTokens, 100e18);
+        assertEq(invested, 10 ether);
+        assertNotEq(vestingContract, address(0));
+    }
+
+    function testGetInvestorDetailsAfterCancellation() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Setup and invest
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        // Cancel round
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        (uint256 allocatedEth, uint256 allocatedTokens, uint256 invested, address vestingContract) =
+            manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 10 ether);
+        assertEq(allocatedTokens, 100e18);
+        assertEq(invested, 10 ether);
+        assertEq(vestingContract, address(0));
+
+        // Claim refund
+        vm.prank(investor);
+        manager.claimRefund(roundId);
+
+        (allocatedEth, allocatedTokens, invested, vestingContract) = manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, 10 ether);
+        assertEq(allocatedTokens, 100e18);
+        assertEq(invested, 0);
+        assertEq(vestingContract, address(0));
+    }
+
+    function testFuzz_GetInvestorDetails(uint256 ethAllocation, uint256 tokenAllocation, uint256 investAmount) public {
+        address investor = address(0x123);
+
+        // Bound inputs
+        ethAllocation = 100 ether;
+        tokenAllocation = bound(tokenAllocation, 1e18, 1000e18);
+        investAmount = bound(investAmount, 0.1 ether, ethAllocation - 1 ether);
+
+        vm.deal(investor, ethAllocation);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, ethAllocation, tokenAllocation);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, investAmount, tokenAllocation);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: investAmount}(roundId);
+
+        (uint256 allocatedEth, uint256 allocatedTokens, uint256 invested,) =
+            manager.getInvestorDetails(roundId, investor);
+        assertEq(allocatedEth, investAmount);
+        assertEq(allocatedTokens, tokenAllocation);
+        assertEq(invested, investAmount);
+    }
+
+    // ============ Get Round Info Tests ============
+
+    function testGetRoundInfo() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+
+        assertEq(round.etherTarget, 100 ether);
+        assertEq(round.etherInvested, 0);
+        assertEq(round.tokenAllocation, 1000e18);
+        assertEq(round.tokenDistributed, 0);
+        assertEq(round.startTime, block.timestamp + 1 days);
+        assertEq(round.endTime, block.timestamp + 8 days);
+        assertEq(round.participants, 0);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+    }
+
+    function testGetRoundInfoNonExistentRound() public {
+        vm.expectRevert(stdError.indexOOBError);
+        manager.getRoundInfo(999);
+    }
+
+    // ============ Get Round Investors Tests ============
+
+    function testGetRoundInvestors() public {
+        address[] memory testInvestors = new address[](3);
+        testInvestors[0] = address(0x123);
+        testInvestors[1] = address(0x456);
+        testInvestors[2] = address(0x789);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Add allocations and investments
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(guardian);
+        manager.activateRound(roundId);
+
+        for (uint256 i = 0; i < testInvestors.length; i++) {
+            vm.deal(testInvestors[i], 10 ether);
+            manager.addInvestorAllocation(roundId, testInvestors[i], 10 ether, 100e18);
+
+            vm.stopPrank();
+            vm.prank(testInvestors[i]);
+            manager.investEther{value: 10 ether}(roundId);
+            vm.startPrank(guardian);
+        }
+        vm.stopPrank();
+
+        address[] memory roundInvestors = manager.getRoundInvestors(roundId);
+        assertEq(roundInvestors.length, testInvestors.length);
+
+        for (uint256 i = 0; i < testInvestors.length; i++) {
+            assertEq(roundInvestors[i], testInvestors[i]);
+        }
+    }
+
+    function testGetRoundInvestorsEmptyRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        address[] memory roundInvestors = manager.getRoundInvestors(roundId);
+        assertEq(roundInvestors.length, 0);
+    }
+
+    function testGetRoundInvestorsAfterCancellation() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.prank(investor);
+        manager.investEther{value: 10 ether}(roundId);
+
+        address[] memory investorsBefore = manager.getRoundInvestors(roundId);
+        assertEq(investorsBefore.length, 1);
+        assertEq(investorsBefore[0], investor);
+
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+
+        address[] memory investorsAfter = manager.getRoundInvestors(roundId);
+        assertEq(investorsAfter.length, 1);
+        assertEq(investorsAfter[0], investor);
+    }
+
+    // ============ Receive Function Tests ============
+
+    function testReceiveFunction() public {
+        address investor = address(0x123);
+        vm.deal(investor, 10 ether);
+
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Setup allocation
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, investor, 10 ether, 100e18);
+
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        // Send ETH directly to contract
+        vm.prank(investor);
+        (bool success,) = address(manager).call{value: 10 ether}("");
+        require(success, "ETH transfer failed");
+
+        // Verify investment was processed
+        (uint256 etherAmount,, uint256 invested,) = manager.getInvestorDetails(roundId, investor);
+        assertEq(etherAmount, invested);
+    }
+
+    function testReceiveFailsWithNoActiveRound() public {
+        address investor = address(0x123);
+        vm.deal(investor, 1 ether);
+
+        vm.prank(investor);
+        vm.expectRevert("NO_ACTIVE_ROUND");
+        (bool success,) = address(manager).call{value: 1 ether}("");
+        require(success, "ETH transfer failed");
+    }
+
+    // ============ Upgrade Tests ============
+
+    function testAuthorizeUpgrade() public {
+        deployIMUpgrade();
+    }
+
+    // ============ Initialization Tests ============
+
+    function testCannotInitializeTwice() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
-        imInstance.initialize(
-            address(tokenInstance),
-            address(timelockInstance),
-            address(treasuryInstance),
-            address(wethInstance),
-            guardian
-        );
+        manager.initialize(address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian);
     }
 
-    // Test: Pause
-    function testPause() public {
-        assertEq(imInstance.paused(), false);
+    // ============ Pausing Tests ============
+
+    function test_PausedCreateRound() public {
         vm.startPrank(guardian);
-        imInstance.pause();
-        assertEq(imInstance.paused(), true);
-        imInstance.unpause();
-        assertEq(imInstance.paused(), false);
+        manager.pause();
+        vm.stopPrank();
+
+        vm.startPrank(address(timelockInstance));
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.createRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18, 365 days, 730 days);
         vm.stopPrank();
     }
 
-    // Test: RevertPauseBranch1
-    function testRevertPauseBranch1() public {
+    function test_PausedActivateRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
         vm.prank(guardian);
-        imInstance.pause();
-        assertTrue(imInstance.paused());
+        manager.pause();
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.activateRound(roundId);
+    }
+
+    function test_PausedInvestEther() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        vm.prank(guardian);
+        manager.pause();
+
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+        vm.prank(INVESTOR);
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function test_PausedAddInvestorAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.pause();
+
+        vm.prank(guardian);
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+    }
+
+    function test_PausedFinalizeRound() public {
+        // Setup active round
+        uint32 roundId = _setupActiveRound();
+
+        // Add investor allocation
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, 100 ether, TOKEN_ALLOCATION);
+
+        // Make investment to complete the round
+        vm.deal(INVESTOR, 100 ether);
+        vm.prank(INVESTOR);
+        manager.investEther{value: 100 ether}(roundId);
+
+        // Wait for round to end
+        vm.warp(block.timestamp + 16 days);
+
+        // Pause the contract
+        vm.prank(guardian);
+        manager.pause();
+
+        // Attempt to finalize while paused
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.finalizeRound(roundId);
+
+        // Verify round status hasn't changed
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.COMPLETED));
+    }
+
+    function test_PausedCancelRound() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        vm.prank(guardian);
+        manager.pause();
+
+        vm.prank(guardian);
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.cancelRound(roundId);
+    }
+
+    function test_EmergencyFunctionsWorkWhenPaused() public {
+        // Setup first round and investment before pausing
+        uint32 roundId1 = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId1, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+        vm.prank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId1);
+
+        // Setup second round and investment before pausing
+        uint32 roundId2 = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId2, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+        vm.prank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId2);
+
+        // Cancel second round for refund test
+        vm.prank(guardian);
+        manager.cancelRound(roundId2);
+
+        // Now pause the contract
+        vm.prank(guardian);
+        manager.pause();
+
+        // Test 1: Verify cancelInvestment works while paused
+        vm.prank(INVESTOR);
+        manager.cancelInvestment(roundId1);
+
+        (,, uint256 invested,) = manager.getInvestorDetails(roundId1, INVESTOR);
+        assertEq(invested, 0);
+
+        // Test 2: Verify claimRefund works while paused
+        vm.prank(INVESTOR);
+        manager.claimRefund(roundId2);
+
+        (,, invested,) = manager.getInvestorDetails(roundId2, INVESTOR);
+        assertEq(invested, 0);
+    }
+
+    // ============ Modifiers ============
+    function test_InvestEtherBranches() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT * 10); // Sufficient ETH for all tests
+
+        // Test 1: validRound modifier
+        vm.prank(INVESTOR);
+        vm.expectRevert("INVALID_ROUND");
+        manager.investEther{value: INVESTMENT_AMOUNT}(999); // Invalid roundId
+
+        // Test 2: notClosed modifier
+        vm.startPrank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId); // First investment
+        vm.expectRevert("AMOUNT_ALLOCATION_MISMATCH");
+        manager.investEther{value: INVESTMENT_AMOUNT / 2}(roundId); // Should fail as amount doesn't match allocation
+        vm.stopPrank();
+
+        // Test 3: whenNotPaused modifier
+        uint32 newRoundId = _setupActiveRound(); // Create new round for pause test
+        vm.prank(guardian);
+        manager.addInvestorAllocation(newRoundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        vm.prank(guardian);
+        manager.pause();
+
+        vm.prank(INVESTOR);
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.investEther{value: INVESTMENT_AMOUNT}(newRoundId);
+    }
+
+    function test_ActivateRoundModifiers() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Test onlyRole modifier
+        vm.prank(INVESTOR);
+        bytes memory expError = abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)", INVESTOR, keccak256("MANAGER_ROLE")
+        );
+        vm.expectRevert(expError);
+        manager.activateRound(roundId);
+
+        // Test validRound modifier
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND");
+        manager.activateRound(999); // Invalid roundId
+
+        // Test correctStatus modifier
+        vm.warp(block.timestamp + 1 days);
+        vm.startPrank(guardian);
+        manager.activateRound(roundId); // First activation
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.activateRound(roundId); // Should fail as round is already active
+        vm.stopPrank();
+    }
+
+    function test_FinalizeRoundModifiers() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        // Test validRound modifier
+        vm.expectRevert("INVALID_ROUND");
+        manager.finalizeRound(999); // Invalid roundId
+
+        // Test round status requirement
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.finalizeRound(roundId); // Should fail as round is not completed
+
+        // Make investment to complete round
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+        vm.prank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function test_AddInvestorAllocationModifiers() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Test onlyRole modifier
+        vm.prank(INVESTOR);
+        bytes memory expError = abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)", INVESTOR, keccak256("MANAGER_ROLE")
+        );
+        vm.expectRevert(expError);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        // Test validRound modifier
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND");
+        manager.addInvestorAllocation(999, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION); // Invalid roundId
+    }
+
+    // Test each revert condition separately
+    function test_InvestEther_WhenRoundNotActive() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        vm.prank(INVESTOR);
+        vm.expectRevert("ROUND_NOT_ACTIVE");
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function test_InvestEther_WhenRoundEnded() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        vm.warp(block.timestamp + 16 days); // Move past end time
+
+        vm.prank(INVESTOR);
+        vm.expectRevert("ROUND_ENDED");
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function test_InvestEther_WhenRoundOversubscribed() public {
+        // Create round with sufficient capacity for all investors
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), TOKEN_ALLOCATION * 100);
+        uint32 roundId = manager.createRound(
+            uint64(block.timestamp + 1 days), 7 days, 100 ether, TOKEN_ALLOCATION * 100, 365 days, 730 days
+        );
+        vm.stopPrank();
+
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        // Fill round with maximum participants
+        for (uint256 i = 1; i <= 50; i++) {
+            address investor = address(uint160(i));
+            vm.prank(guardian);
+            manager.addInvestorAllocation(roundId, investor, 1 ether, TOKEN_ALLOCATION);
+
+            vm.deal(investor, 1 ether);
+            vm.prank(investor);
+            manager.investEther{value: 1 ether}(roundId);
+        }
+
+        // Try to invest with one more participant
+        address extraInvestor = address(uint160(51));
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, extraInvestor, 1 ether, TOKEN_ALLOCATION);
+        vm.deal(extraInvestor, 1 ether);
+
+        vm.prank(extraInvestor);
+        vm.expectRevert("ROUND_OVERSUBSCRIBED");
+        manager.investEther{value: 1 ether}(roundId);
+    }
+
+    function test_InvestEther_WhenNoAllocation() public {
+        uint32 roundId = _setupActiveRound();
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        vm.prank(INVESTOR);
+        vm.expectRevert("NO_ALLOCATION");
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function test_InvestEther_WhenAmountMismatch() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        vm.prank(INVESTOR);
+        vm.expectRevert("AMOUNT_ALLOCATION_MISMATCH");
+        manager.investEther{value: INVESTMENT_AMOUNT / 2}(roundId);
+    }
+
+    function test_InvestEther_WhenInvalidRound() public {
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        vm.prank(INVESTOR);
+        vm.expectRevert("INVALID_ROUND");
+        manager.investEther{value: INVESTMENT_AMOUNT}(999); // Non-existent round
+    }
+
+    function test_InvestEther_WhenPaused() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        vm.prank(guardian);
+        manager.pause();
+
+        vm.prank(INVESTOR);
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.expectRevert(expError);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+    }
+
+    function test_InvestEther_SuccessfulInvestment() public {
+        uint32 roundId = _setupActiveRound();
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, INVESTOR, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.deal(INVESTOR, INVESTMENT_AMOUNT);
+
+        uint256 balanceBefore = INVESTOR.balance;
+
+        vm.prank(INVESTOR);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+
+        // Verify state changes
+        (,, uint256 invested,) = manager.getInvestorDetails(roundId, INVESTOR);
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+
+        assertEq(invested, INVESTMENT_AMOUNT);
+        assertEq(round.etherInvested, INVESTMENT_AMOUNT);
+        assertEq(round.participants, 1);
+        assertEq(INVESTOR.balance, balanceBefore - INVESTMENT_AMOUNT);
+    }
+
+    function test_RemoveInvestorOperation() public {
+        // Setup round with multiple investors
+        uint32 roundId = _setupActiveRound();
+        address[] memory testInvestors = new address[](5);
+
+        // Create and track test investors
+        for (uint256 i = 0; i < 5; i++) {
+            testInvestors[i] = address(uint160(i + 1));
+            vm.prank(guardian);
+            manager.addInvestorAllocation(roundId, testInvestors[i], INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+            vm.deal(testInvestors[i], INVESTMENT_AMOUNT);
+            vm.prank(testInvestors[i]);
+            manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+        }
+
+        // Verify initial state
+        address[] memory initialInvestors = manager.getRoundInvestors(roundId);
+        assertEq(initialInvestors.length, 5, "Should have 5 investors initially");
+
+        // Test Case 1: Remove first investor
+        vm.prank(testInvestors[0]);
+        manager.cancelInvestment(roundId);
+
+        address[] memory afterFirstRemoval = manager.getRoundInvestors(roundId);
+        assertEq(afterFirstRemoval.length, 4, "Should have 4 investors after first removal");
+        assertFalse(_containsAddress(afterFirstRemoval, testInvestors[0]), "Removed investor should not be in array");
+
+        // Test Case 2: Remove last investor
+        vm.prank(testInvestors[4]);
+        manager.cancelInvestment(roundId);
+
+        address[] memory afterLastRemoval = manager.getRoundInvestors(roundId);
+        assertEq(afterLastRemoval.length, 3, "Should have 3 investors after last removal");
+        assertFalse(_containsAddress(afterLastRemoval, testInvestors[4]), "Removed investor should not be in array");
+
+        // Test Case 3: Remove middle investor
+        vm.prank(testInvestors[2]);
+        manager.cancelInvestment(roundId);
+
+        address[] memory afterMiddleRemoval = manager.getRoundInvestors(roundId);
+        assertEq(afterMiddleRemoval.length, 2, "Should have 2 investors after middle removal");
+        assertFalse(_containsAddress(afterMiddleRemoval, testInvestors[2]), "Removed investor should not be in array");
+
+        // Verify remaining investors can still cancel
+        for (uint256 i = 0; i < 5; i++) {
+            if (i != 0 && i != 2 && i != 4) {
+                // Skip already removed investors
+                vm.prank(testInvestors[i]);
+                manager.cancelInvestment(roundId);
+            }
+        }
+
+        // Verify final state
+        address[] memory finalInvestors = manager.getRoundInvestors(roundId);
+        assertEq(finalInvestors.length, 0, "Should have no investors at the end");
+
+        // Verify round state
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(round.participants, 0, "Should have no participants");
+        assertEq(round.etherInvested, 0, "Should have no ETH invested");
+    }
+
+    function testDeployVestingContract() public {
+        // Setup initial state
+        uint64 start = uint64(block.timestamp + 1 days);
+        uint64 duration = 30 days;
+        uint256 ethTarget = 100 ether;
+        uint256 tokenAlloc = 1000 ether;
+        uint64 vestingCliff = 90 days;
+        uint64 vestingDuration = 365 days;
+
+        // Release tokens to manager first
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+
+        // Expect CreateRound and RoundStatusUpdated events
+        vm.expectEmit(true, false, false, true);
+        emit CreateRound(0, start, duration, ethTarget, tokenAlloc);
+        vm.expectEmit(true, false, false, true);
+        emit RoundStatusUpdated(0, IINVMANAGER.RoundStatus.PENDING);
+
+        // Create round
+        uint32 roundId = manager.createRound(start, duration, ethTarget, tokenAlloc, vestingCliff, vestingDuration);
+        vm.stopPrank();
+
+        // Expect InvestorAllocated event
+        vm.expectEmit(true, true, false, true);
+        emit InvestorAllocated(roundId, alice, 100 ether, 1000 ether);
+
+        // Add investor allocation for full round amount
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, 100 ether, 1000 ether);
+        vm.stopPrank();
+
+        // Expect RoundStatusUpdated event
+        vm.expectEmit(true, false, false, true);
+        emit RoundStatusUpdated(roundId, IINVMANAGER.RoundStatus.ACTIVE);
+
+        // Activate round
+        vm.warp(start);
+        vm.startPrank(guardian);
+        manager.activateRound(roundId);
+        vm.stopPrank();
+
+        // Expect Invest event
+        vm.expectEmit(true, true, false, true);
+        emit Invest(roundId, alice, 100 ether);
+
+        // Invest full amount to complete the round
+        vm.deal(alice, 100 ether);
+        vm.startPrank(alice);
+        manager.investEther{value: 100 ether}(roundId);
+        vm.stopPrank();
+
+        // Wait for round to end
+        // Wait for round to end
+        vm.warp(start + duration + 1);
+
+        // Complete round
+        vm.startPrank(guardian);
+        manager.finalizeRound(roundId);
+        vm.stopPrank();
+
+        // Get vesting contract address
+        (,,, address vestingAddress) = manager.getInvestorDetails(roundId, alice);
+
+        // Verify vesting contract
+        InvestorVesting vestingContract = InvestorVesting(vestingAddress);
+
+        // Verify core parameters
+        assertEq(vestingContract.owner(), alice);
+
+        // Verify vesting schedule
+        assertEq(vestingContract.start(), block.timestamp + vestingCliff);
+        assertEq(vestingContract.duration(), vestingDuration);
+        assertEq(vestingContract.end(), block.timestamp + vestingCliff + vestingDuration);
+
+        // Verify initial vesting state
+        assertEq(vestingContract.released(), 0);
+        assertEq(vestingContract.releasable(), 0);
+
+        // Verify token balance
+        assertEq(tokenInstance.balanceOf(vestingAddress), 1000 ether);
+    }
+
+    function testFinalizeRoundMultipleInvestors() public {
+        // Setup initial state
+        uint64 start = uint64(block.timestamp + 1 days);
+        uint64 duration = 30 days;
+        uint256 ethTarget = 100 ether;
+        uint256 tokenAlloc = 1000 ether;
+        uint64 vestingCliff = 90 days;
+        uint64 vestingDuration = 365 days;
+
+        // Release tokens to manager
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+
+        // Create round
+        uint32 roundId = manager.createRound(start, duration, ethTarget, tokenAlloc, vestingCliff, vestingDuration);
+        vm.stopPrank();
+
+        // Setup multiple investors
+        address[] memory investors = new address[](3);
+        investors[0] = alice;
+        investors[1] = bob;
+        investors[2] = charlie;
+
+        uint256[] memory ethAmounts = new uint256[](3);
+        ethAmounts[0] = 40 ether;
+        ethAmounts[1] = 35 ether;
+        ethAmounts[2] = 25 ether;
+
+        uint256[] memory tokenAmounts = new uint256[](3);
+        tokenAmounts[0] = 400 ether;
+        tokenAmounts[1] = 350 ether;
+        tokenAmounts[2] = 250 ether;
+
+        // Add allocations for all investors
+        vm.startPrank(guardian);
+        for (uint256 i = 0; i < investors.length; i++) {
+            manager.addInvestorAllocation(roundId, investors[i], ethAmounts[i], tokenAmounts[i]);
+        }
+
+        // Activate round
+        vm.warp(start);
+        manager.activateRound(roundId);
+        vm.stopPrank();
+
+        // Investors make investments
+        for (uint256 i = 0; i < investors.length; i++) {
+            vm.deal(investors[i], ethAmounts[i]);
+            vm.prank(investors[i]);
+            manager.investEther{value: ethAmounts[i]}(roundId);
+        }
+
+        // Wait for round to end
+        vm.warp(start + duration + 1);
+
+        // Finalize round
+        vm.startPrank(guardian);
+        manager.finalizeRound(roundId);
+        vm.stopPrank();
+
+        // Verify final state
+        for (uint256 i = 0; i < investors.length; i++) {
+            (,,, address vestingAddress) = manager.getInvestorDetails(roundId, investors[i]);
+            InvestorVesting vestingContract = InvestorVesting(vestingAddress);
+
+            assertEq(vestingContract.owner(), investors[i]);
+            assertEq(vestingContract.start(), block.timestamp + vestingCliff);
+            assertEq(vestingContract.duration(), vestingDuration);
+            assertEq(vestingContract.end(), block.timestamp + vestingCliff + vestingDuration);
+            assertEq(vestingContract.released(), 0);
+            assertEq(tokenInstance.balanceOf(vestingAddress), tokenAmounts[i]);
+        }
+
+        // Verify treasury received ETH
+        assertEq(address(treasuryInstance).balance, ethTarget);
+    }
+
+    function testRemoveInvestorAllocation() public {
+        uint32 roundId = _setupActiveRound();
+
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        vm.expectEmit(true, true, false, true);
+        emit InvestorAllocationRemoved(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        manager.removeInvestorAllocation(roundId, alice);
+        vm.stopPrank();
+
+        (uint256 allocEth, uint256 allocToken,,) = manager.getInvestorDetails(roundId, alice);
+        assertEq(allocEth, 0, "ETH allocation should be zero");
+        assertEq(allocToken, 0, "Token allocation should be zero");
+    }
+
+    function testRemoveInvestorAllocationRevertsForZeroAddress() public {
+        uint32 roundId = _setupActiveRound();
+
+        vm.startPrank(guardian);
+        vm.expectRevert("INVALID_INVESTOR");
+        manager.removeInvestorAllocation(roundId, address(0));
+        vm.stopPrank();
+    }
+
+    function testRemoveInvestorAllocationRevertsForUnauthorized() public {
+        uint32 roundId = _setupActiveRound();
+
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, MANAGER_ROLE);
+        vm.prank(alice);
+        vm.expectRevert(expError);
+        manager.removeInvestorAllocation(roundId, bob);
+    }
+
+    function testRemoveInvestorAllocationRevertsForNoAllocation() public {
+        uint32 roundId = _setupActiveRound();
+
+        vm.startPrank(guardian);
+        vm.expectRevert("NO_ALLOCATION_EXISTS");
+        manager.removeInvestorAllocation(roundId, alice);
+        vm.stopPrank();
+    }
+
+    function testRemoveInvestorAllocationRevertsForActivePosition() public {
+        uint32 roundId = _setupActiveRound();
+
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.stopPrank();
+
+        vm.deal(alice, INVESTMENT_AMOUNT);
+        vm.prank(alice);
+        manager.investEther{value: INVESTMENT_AMOUNT}(roundId);
+
+        vm.startPrank(guardian);
+        vm.expectRevert("INVESTOR_HAS_ACTIVE_POSITION");
+        manager.removeInvestorAllocation(roundId, alice);
+        vm.stopPrank();
+    }
+
+    function testRemoveInvestorAllocationRevertsForCompletedRound() public {
+        uint32 roundId = _setupActiveRound();
+
+        // Add allocation for alice who will complete the round
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, 100 ether, TOKEN_ALLOCATION);
+
+        // Add another allocation for bob that we'll try to remove later
+        manager.addInvestorAllocation(roundId, bob, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        vm.stopPrank();
+
+        // Complete the round by having alice invest the full amount
+        vm.deal(alice, 100 ether);
+        vm.prank(alice);
+        manager.investEther{value: 100 ether}(roundId);
+
+        // Verify round is completed
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.COMPLETED));
+
+        // Now try to remove bob's allocation - should fail because round is completed
+        vm.startPrank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.removeInvestorAllocation(roundId, bob);
+        vm.stopPrank();
+    }
+
+    function testRemoveInvestorAllocationRevertsWhenPaused() public {
+        uint32 roundId = _setupActiveRound();
+
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+        manager.pause();
 
         bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
-        vm.prank(alice);
-        vm.expectRevert(expError); // contract paused
-        imInstance.investEther(0);
-    }
-
-    // Test: CreateRound Propoer via Governor
-    function testCreateRound() public {
-        createRound(100 ether, 500_000 ether);
-    }
-
-    // Test: CreateRoundSpoof
-    function testCreateRoundSpoof() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-        vm.prank(address(timelockInstance));
-        imInstance.createRound(uint64(block.timestamp), 1 weeks, 100 ether, 1000 ether);
-        IINVESTOR.Round memory item = imInstance.getRoundInfo(0);
-
-        assertEq(item.start, uint64(block.timestamp));
-        assertEq(item.end, uint64(block.timestamp + 1 weeks));
-        assertEq(item.etherTarget, 100 ether);
-        assertEq(item.tokenAllocation, 1000 ether);
-    }
-
-    // Test: Multiple Rounds Creation
-    function testMultipleRoundsCreation() public {
-        vm.startPrank(address(timelockInstance));
-
-        uint64 startTime = uint64(block.timestamp);
-        for (uint64 i = 0; i < 3; i++) {
-            treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether * (i + 1));
-            imInstance.createRound(startTime + (i * 1 weeks), 1 weeks, 100 ether * (i + 1), 1000 ether * (i + 1));
-        }
+        vm.expectRevert(expError);
+        manager.removeInvestorAllocation(roundId, alice);
         vm.stopPrank();
-
-        for (uint32 i = 0; i < 3; i++) {
-            IINVESTOR.Round memory item = imInstance.getRoundInfo(i);
-            assertEq(item.start, startTime + (i * 1 weeks));
-            assertEq(item.end, startTime + (i * 1 weeks) + 1 weeks);
-            assertEq(item.etherTarget, 100 ether * (i + 1));
-            assertEq(item.tokenAllocation, 1000 ether * (i + 1));
-        }
     }
 
-    // Test: CreateRound Insufficient Token Balance
-    function testCreateRoundInsufficientBalance() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "NO_SUPPLY");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        imInstance.createRound(uint64(block.timestamp), 1 weeks, 100 ether, 1000 ether);
-    }
-
-    // Test: CreateRound Invalid Ether Target
-    function testCreateRoundInvalidEtherTarget() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ETH_ALLOCATION");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        imInstance.createRound(uint64(block.timestamp), 1 weeks, 0, 1000 ether);
-    }
-
-    // Test: CreateRound Invalid Token Allocation
-    function testCreateRoundInvalidTokenAllocation() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_TOKEN_ALLOCATION");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        imInstance.createRound(uint64(block.timestamp), 1 weeks, 100 ether, 0);
-    }
-
-    // Test: CloseRound
-    function testCloseRound() public {
-        // Setup round
-        createRound(100 ether, 1000 ether);
-
-        // Setup allocations
+    function testRemoveInvestorAllocationRevertsForInvalidRound() public {
         vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 50 ether, 500 ether);
-        imInstance.addInvestorAllocation(0, bob, 50 ether, 500 ether);
-        vm.stopPrank();
-
-        // Investments
-        vm.deal(alice, 100 ether);
-        vm.deal(bob, 100 ether);
-        vm.startPrank(alice);
-        wethInstance.deposit{value: 50 ether}();
-        IERC20(address(wethInstance)).approve(address(imInstance), 50 ether);
-        imInstance.investWETH(0, 50 ether);
-        vm.stopPrank();
-
-        vm.startPrank(bob);
-        wethInstance.deposit{value: 50 ether}();
-        IERC20(address(wethInstance)).approve(address(imInstance), 50 ether);
-        imInstance.investWETH(0, 50 ether);
-        vm.stopPrank();
-
-        uint256 treasuryBalanceBefore = address(treasuryInstance).balance;
-        imInstance.closeRound(0);
-        uint256 treasuryBalanceAfter = address(treasuryInstance).balance;
-
-        assertEq(treasuryBalanceAfter - treasuryBalanceBefore, 100 ether);
-    }
-
-    // Test: AddInvestorAllocation
-    function testAddInvestorAllocation() public {
-        createRound(100 ether, 500_000 ether);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
-        IINVESTOR.Investment memory investment = imInstance.getInvestorAllocation(0, alice);
-        assertEq(investment.etherAmount, 10 ether);
-        assertEq(investment.tokenAmount, 50_000 ether);
-    }
-
-    // Test: AddInvestorAllocationInvalidRound
-    function testAddInvestorAllocationInvalidRound() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ROUND");
-        vm.prank(guardian);
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(1, alice, 1 ether, 10 ether);
-    }
-
-    // Test: AddInvestorAllocationExceedsRoundLimit
-    function testAddInvestorAllocationExceedsRoundLimit() public {
-        createRound(100 ether, 1000 ether);
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 10 ether, 900 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ALLOCATION_EXCEEDS_ROUND_LIMIT");
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, bob, 10 ether, 200 ether);
+        vm.expectRevert("INVALID_ROUND");
+        manager.removeInvestorAllocation(999, alice);
         vm.stopPrank();
     }
+    // ============ Helpers ============
 
-    // Test: AddInvestorAllocationUnauthorizedAccess
-    function testAddInvestorAllocationUnauthorizedAccess() public {
-        bytes memory expError =
-            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, ALLOCATOR_ROLE);
-        vm.prank(alice);
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, bob, 1 ether, 10 ether);
-    }
-
-    // Test Fuzz: FuzzAddInvestorAllocation
-    function testFuzzAddInvestorAllocation(uint256 amountETH, uint256 amountToken) public {
-        createRound(100 ether, 1000 ether);
-        vm.assume(amountETH > 0 && amountToken > 0 && amountToken <= 1000 ether);
-
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, amountETH, amountToken);
-
-        IINVESTOR.Investment memory item = imInstance.getInvestorAllocation(0, alice);
-        assertEq(item.etherAmount, amountETH);
-        assertEq(item.tokenAmount, amountToken);
-    }
-
-    // Test: AddInvestorAllocationZeroAddress
-    function testAddInvestorAllocationZeroAddress() public {
-        createRound(100 ether, 1000 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ADDRESS");
-        vm.prank(guardian);
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, address(0), 1 ether, 10 ether);
-    }
-
-    // Test: AddInvestorAllocationZeroEthAmount
-    function testAddInvestorAllocationZeroEthAmount() public {
-        createRound(100 ether, 1000 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ETH_AMOUNT");
-        vm.prank(guardian);
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, alice, 0, 10 ether);
-    }
-
-    // Test: AddInvestorAllocationZeroTokenAmount
-    function testAddInvestorAllocationZeroTokenAmount() public {
-        createRound(100 ether, 1000 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_TOKEN_AMOUNT");
-        vm.prank(guardian);
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, alice, 1 ether, 0);
-    }
-
-    // Test: AddInvestorAllocationMultipleAllocations
-    function testAddInvestorAllocationMultipleAllocations() public {
-        createRound(100 ether, 1000 ether);
-        vm.startPrank(guardian);
-
-        imInstance.addInvestorAllocation(0, alice, 1 ether, 400 ether);
-        imInstance.addInvestorAllocation(0, bob, 1 ether, 400 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ALLOCATION_EXCEEDS_ROUND_LIMIT");
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, charlie, 1 ether, 201 ether);
-
-        vm.stopPrank();
-    }
-
-    // Test: AddInvestorAllocationUpdateExisting
-    function testAddInvestorAllocationUpdateExisting() public {
-        createRound(100 ether, 1000 ether);
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 1 ether, 400 ether);
-        imInstance.addInvestorAllocation(0, alice, 2 ether, 400 ether);
-        vm.stopPrank();
-
-        IINVESTOR.Investment memory investment = imInstance.getInvestorAllocation(0, alice);
-        assertEq(investment.etherAmount, 3 ether);
-        assertEq(investment.tokenAmount, 800 ether);
-    }
-
-    // Test: RevertAddInvestorAllocationUpdateExisting
-    function testRevertAddInvestorAllocationUpdateExisting() public {
-        createRound(100 ether, 1000 ether);
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 1 ether, 400 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ALLOCATION_EXCEEDS_ROUND_LIMIT");
-        vm.expectRevert(expError);
-        imInstance.addInvestorAllocation(0, alice, 2 ether, 700 ether);
-        vm.stopPrank();
-    }
-
-    // Test Fuzz: FuzzAddInvestorAllocationBoundaries
-    function testFuzzAddInvestorAllocationBoundaries(uint256 amountETH, uint256 amountToken, address investor_)
-        public
+    function _createTestRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
+        private
+        returns (uint32 roundId)
     {
-        createRound(100 ether, 1000 ether);
-        vm.assume(amountETH > 0);
-        vm.assume(amountToken > 0);
-        vm.assume(amountToken <= 1000 ether);
-        vm.assume(investor_ != address(0));
-
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, investor_, amountETH, amountToken);
-
-        IINVESTOR.Investment memory investment = imInstance.getInvestorAllocation(0, investor_);
-        assertEq(investment.etherAmount, amountETH);
-        assertEq(investment.tokenAmount, amountToken);
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), tokenAlloc);
+        roundId = manager.createRound(start, duration, ethTarget, tokenAlloc, 365 days, 730 days);
+        vm.stopPrank();
     }
 
-    // Test: RemoveInvestorAllocation Invalid Round
-    function testRemoveInvestorAllocationInvalidRound() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ROUND");
-        vm.prank(guardian);
-        vm.expectRevert(expError);
-        imInstance.removeInvestorAllocation(999, alice);
-    }
-
-    // Test: RemoveInvestorAllocation Unauthorized
-    function testRemoveInvestorAllocationUnauthorized() public {
-        bytes memory expError =
-            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, ALLOCATOR_ROLE);
-        vm.prank(alice);
-        vm.expectRevert(expError);
-        imInstance.removeInvestorAllocation(0, alice);
-    }
-
-    // Test: RemoveInvestorAllocation Success
-    function testRemoveInvestorAllocationSuccess() public {
-        createRound(100 ether, 1000 ether);
-
-        // First add an allocation
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 1 ether, 10 ether);
-
-        // Verify allocation exists
-        IINVESTOR.Investment memory item = imInstance.getInvestorAllocation(0, alice);
-        assertEq(item.etherAmount, 1 ether);
-        assertEq(item.tokenAmount, 10 ether);
-
-        // Remove allocation
-        vm.prank(guardian);
-        imInstance.removeInvestorAllocation(0, alice);
-
-        // Verify allocation is removed
-        item = imInstance.getInvestorAllocation(0, alice);
-        assertEq(item.etherAmount, 0);
-        assertEq(item.tokenAmount, 0);
-    }
-
-    // Test: RemoveInvestorAllocation Non-Existent
-    function testRemoveInvestorAllocationNonExistent() public {
-        createRound(100 ether, 1000 ether);
-
-        // Remove non-existent allocation
-        vm.prank(guardian);
-        imInstance.removeInvestorAllocation(0, alice);
-
-        // Verify zero values
-        IINVESTOR.Investment memory item = imInstance.getInvestorAllocation(0, alice);
-        assertEq(item.etherAmount, 0);
-        assertEq(item.tokenAmount, 0);
-    }
-
-    // Test: GetRoundInfo Invalid Round
-    function testGetRoundInfoInvalidRound() public {
-        vm.expectRevert();
-        imInstance.getRoundInfo(0);
-    }
-
-    // Test: CreateRound Invalid Duration
-    function testCreateRoundInvalidDuration() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_DURATION");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        imInstance.createRound(uint64(block.timestamp), 0, 100 ether, 1000 ether);
-    }
-
-    // Test: InvestEth
-    function testInvestEth() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
-
-        vm.deal(alice, 10 ether);
-        vm.prank(alice);
-        (success,) = payable(address(imInstance)).call{value: 10 ether}("");
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, 10 ether);
-        assertEq(roundInfo.participants, 1);
-    }
-
-    // Test: InvestEther Invalid Round
-    function testInvestEtherInvalidRound() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ROUND");
-        vm.expectRevert(expError);
-        imInstance.investEther{value: 1 ether}(999);
-    }
-
-    // Test: InvestEther No Allocation
-    function testInvestEtherNoAllocation() public {
-        createRound(100 ether, 1000 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
-        vm.deal(alice, 2 ether);
-        vm.prank(alice);
-        vm.expectRevert(expError);
-        imInstance.investEther{value: 1 ether}(0);
-    }
-
-    // Test: InvestWETH
-    function testInvestWETH() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
-        vm.deal(alice, 10 ether);
-        vm.startPrank(alice);
-        (success,) = payable(address(wethInstance)).call{value: 10 ether}("");
-        wethInstance.approve(address(imInstance), 10 ether);
-        imInstance.investWETH(0, 10 ether);
+    function _setupActiveRound() private returns (uint32) {
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), 1000e18);
+        uint32 roundId =
+            manager.createRound(uint64(block.timestamp + 1 days), 15 days, 100 ether, 1000e18, 365 days, 730 days);
         vm.stopPrank();
 
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, 10 ether);
-        assertEq(roundInfo.participants, 1);
-    }
-
-    // Test: RevertInvestWETHBranch1
-    function testRevertInvestWETHBranch1() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
         vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 5 ether, 50_000 ether);
-        vm.deal(alice, 10 ether);
-        vm.startPrank(alice);
-        (success,) = payable(address(wethInstance)).call{value: 10 ether}("");
-        wethInstance.approve(address(imInstance), 10 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
-        vm.expectRevert(expError);
-        imInstance.investWETH(0, 10 ether);
-        vm.stopPrank();
+        manager.activateRound(roundId);
 
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, 0 ether);
-        assertEq(roundInfo.participants, 0);
+        return roundId;
     }
 
-    // Test: CancelInvestment
-    function testCancelInvestment() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
-        uint256 amount = 10 ether;
-        vm.deal(alice, amount);
-        vm.prank(alice);
-        (success,) = payable(address(imInstance)).call{value: amount}("");
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, amount);
-        assertEq(roundInfo.participants, 1);
-
-        vm.prank(alice);
-        imInstance.cancelInvestment(0);
-
-        roundInfo = imInstance.getRoundInfo(0);
-        assertEq(wethInstance.balanceOf(alice), amount);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, 0);
-        assertEq(roundInfo.participants, 0);
-    }
-
-    // Test: CancelInvestment Invalid Round
-    function testCancelInvestmentInvalidRound() public {
-        createRound(100 ether, 500_000 ether);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ROUND");
-        vm.expectRevert(expError);
-        imInstance.cancelInvestment(1);
-    }
-
-    // Test: CancelInvestment Round Closed
-    function testCancelInvestmentRoundClosed() public {
-        createRound(100 ether, 1000 ether);
-
-        // Setup: Add allocation and invest
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 100 ether, 1000 ether);
-        vm.stopPrank();
-
-        vm.deal(alice, 100 ether);
-        vm.prank(alice);
-        imInstance.investEther{value: 100 ether}(0);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ROUND_CLOSED");
-        vm.prank(alice);
-        vm.expectRevert(expError);
-        imInstance.cancelInvestment(0);
-    }
-
-    // Test: CancelInvestment Investor Not Exist
-    function testCancelInvestmentInvestorNotExist() public {
-        createRound(100 ether, 1000 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVESTOR_NOT_EXIST");
-        vm.prank(alice);
-        vm.expectRevert(expError);
-        imInstance.cancelInvestment(0);
-    }
-
-    // Test: CancelInvestment Multiple Investors
-    function testCancelInvestmentMultipleInvestors() public {
-        createRound(100 ether, 1000 ether);
-
-        // Setup: Add allocations and investments
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 1 ether, 10 ether);
-        imInstance.addInvestorAllocation(0, bob, 2 ether, 20 ether);
-        vm.stopPrank();
-
-        vm.deal(alice, 1 ether);
-        vm.prank(alice);
-        imInstance.investEther{value: 1 ether}(0);
-
-        vm.deal(bob, 2 ether);
-        vm.prank(bob);
-        imInstance.investEther{value: 2 ether}(0);
-
-        // Cancel alice's investment
-        vm.prank(alice);
-        imInstance.cancelInvestment(0);
-
-        // Verify alice's investment is cancelled
-        IINVESTOR.Investment memory item = imInstance.getInvestorAllocation(0, alice);
-        assertEq(item.etherAmount, 0);
-        assertEq(item.tokenAmount, 0);
-        assertEq(wethInstance.balanceOf(alice), 1 ether); //refunds are sent via WETH
-
-        // Verify bob's investment remains
-        IINVESTOR.Investment memory item2 = imInstance.getInvestorAllocation(0, bob);
-        assertEq(item2.etherAmount, 2 ether);
-        assertEq(item2.tokenAmount, 20 ether);
-    }
-
-    // Test: Can't CancelInvestment Twice
-    function testCancelInvestmentTwice() public {
-        createRound(100 ether, 1000 ether);
-
-        // Setup: Add allocation and invest
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, address(this), 1 ether, 10 ether);
-        vm.stopPrank();
-
-        vm.deal(address(this), 1 ether);
-        imInstance.investEther{value: 1 ether}(0);
-
-        imInstance.cancelInvestment(0);
-        // Verify alice's investment is cancelled
-        IINVESTOR.Investment memory item = imInstance.getInvestorAllocation(0, address(this));
-        assertEq(item.etherAmount, 0);
-        assertEq(item.tokenAmount, 0);
-        assertEq(wethInstance.balanceOf(address(this)), 1 ether); //refunds are sent via WETH
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVESTOR_NOT_EXIST");
-        vm.expectRevert(expError);
-        imInstance.cancelInvestment(0);
-    }
-
-    // Test: RevertCancelRoundBranch1
-    function testRevertCancelRoundBranch1() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 10 ether, 50_000 ether);
-        uint256 amount = 10 ether;
-        vm.deal(alice, amount);
-        vm.prank(alice);
-        (success,) = payable(address(imInstance)).call{value: amount}("");
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, amount);
-        assertEq(roundInfo.participants, 1);
-        bytes memory expError =
-            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", guardian, MANAGER_ROLE);
-        vm.prank(guardian); // access control
-        vm.expectRevert(expError);
-        imInstance.cancelRound(0);
-    }
-
-    // Test: RevertCancelRoundBranch2
-    function testRevertCancelRoundBranch2() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, 100 ether, 500_000 ether);
-
-        uint256 amount = 100 ether;
-        vm.deal(alice, amount);
-        vm.prank(alice);
-        (success,) = payable(address(imInstance)).call{value: amount}("");
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, amount);
-        assertEq(roundInfo.participants, 1);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ROUND_CLOSED");
-        vm.prank(address(timelockInstance)); // round closed
-        vm.expectRevert(expError);
-        imInstance.cancelRound(0);
-    }
-
-    // Test: RevertCancelRoundBranch3
-    function testRevertCancelRoundBranch3() public returns (bool success) {
-        createRound(100 ether, 500_000 ether);
-        uint256 amount = 10 ether;
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, amount, 50_000 ether);
-
-        vm.deal(alice, amount);
-        vm.prank(alice);
-        (success,) = payable(address(imInstance)).call{value: amount}("");
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, 500_000 ether);
-        assertEq(roundInfo.etherInvested, amount);
-        assertEq(roundInfo.participants, 1);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "CANT_CANCEL_ROUND");
-        vm.prank(address(timelockInstance)); // can't delete the zero round
-        vm.expectRevert(expError);
-        imInstance.cancelRound(0);
-    }
-
-    // Test: CancelRound
-    function testCancelRound() public returns (bool success) {
-        uint256 raiseAmount = 100 ether;
-        uint256 roundAllocation = 500_000 ether;
-        createRound(raiseAmount, roundAllocation);
-        uint256 amount = raiseAmount / 10;
-        uint256 allocation = roundAllocation / 10;
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(0, alice, amount, allocation);
-
-        vm.deal(alice, amount * 2);
-        vm.prank(alice);
-        (success,) = payable(address(imInstance)).call{value: amount}("");
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherTarget, 100 ether);
-        assertEq(roundInfo.tokenAllocation, roundAllocation);
-        assertEq(roundInfo.etherInvested, amount);
-        assertEq(roundInfo.participants, 1);
-
-        createRound(400 ether, roundAllocation);
-        vm.prank(guardian);
-        imInstance.addInvestorAllocation(1, alice, amount, allocation);
-        vm.startPrank(alice);
-        (success,) = payable(address(wethInstance)).call{value: amount}("");
-        wethInstance.approve(address(imInstance), amount);
-        imInstance.investWETH(1, amount);
-        vm.stopPrank();
-
-        uint256 balBefore = tokenInstance.balanceOf(address(treasuryInstance));
-        vm.prank(address(timelockInstance));
-        imInstance.cancelRound(1);
-        uint256 balAfter = tokenInstance.balanceOf(address(treasuryInstance));
-        uint256 aliceBal = wethInstance.balanceOf(alice);
-        uint256 imBal = tokenInstance.balanceOf(address(imInstance));
-
-        assertEq(imBal, roundAllocation);
-        assertEq(aliceBal, amount);
-        assertEq(balAfter, balBefore + roundAllocation);
-    }
-
-    function testFuzz_InvestmentAmount(uint256 amount) public {
-        vm.assume(amount > 0 && amount <= 100 ether);
-
-        // Setup round
-        createRound(100 ether, 1000 ether);
-
-        // Setup allocations
-        vm.startPrank(guardian);
-        imInstance.addInvestorAllocation(0, alice, amount, amount * 10);
-        vm.stopPrank();
-
-        // Invest
-        vm.deal(alice, 100 ether);
-        vm.startPrank(alice);
-        wethInstance.deposit{value: amount}();
-        IERC20(address(wethInstance)).approve(address(imInstance), amount);
-        imInstance.investWETH(0, amount);
-        vm.stopPrank();
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.etherInvested, amount);
-    }
-
-    // Test: CreateRound Start Time Too Old
-    function testCreateRoundStartTimeTooOld() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_START_TIME");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        imInstance.createRound(uint64(block.timestamp - 2 days), 5 days, 100 ether, 1000 ether);
-    }
-
-    // Test: CreateRound Minimum Duration
-    function testCreateRoundMinimumDuration() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        vm.prank(address(timelockInstance));
-        imInstance.createRound(uint64(block.timestamp), 5 days, 100 ether, 1000 ether);
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.end - roundInfo.start, 5 days);
-    }
-
-    // Test: CreateRound Start Time One Day Past
-    function testCreateRoundStartTimeOneDayPast() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        vm.prank(address(timelockInstance));
-        imInstance.createRound(uint64(block.timestamp - 1 days), 5 days, 100 ether, 1000 ether);
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.start, block.timestamp - 1 days);
-    }
-
-    // Test: CreateRound Future Start Time
-    function testCreateRoundFutureStartTime() public {
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        vm.prank(address(timelockInstance));
-        imInstance.createRound(uint64(block.timestamp + 1 days), 5 days, 100 ether, 1000 ether);
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.start, block.timestamp + 1 days);
-    }
-
-    // Test: CreateRound Fuzz Duration
-    function testFuzzCreateRoundDuration(uint64 duration) public {
-        vm.assume(duration >= 5 days && duration <= 365 days);
-
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        vm.prank(address(timelockInstance));
-        imInstance.createRound(uint64(block.timestamp), duration, 100 ether, 1000 ether);
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.end - roundInfo.start, duration);
-    }
-
-    // Test: CreateRound Fuzz Start Time
-    function testFuzzCreateRoundStartTime(uint64 startOffset) public {
-        vm.assume(startOffset <= 1 days);
-        uint64 startTime = uint64(block.timestamp - startOffset);
-
-        vm.prank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(imInstance), 1000 ether);
-
-        vm.prank(address(timelockInstance));
-        imInstance.createRound(startTime, 5 days, 100 ether, 1000 ether);
-
-        IINVESTOR.Round memory roundInfo = imInstance.getRoundInfo(0);
-        assertEq(roundInfo.start, startTime);
-    }
-
-    function createRound(uint256 target, uint256 allocation) public {
-        // execute a DAO proposal that
-        // 1. moves token allocation from treasury to the InvestmentManager
-        // 2. initializes the investment round
-
-        address[] memory winners = new address[](3);
-        winners[0] = alice;
-        winners[1] = bob;
-        winners[2] = charlie;
-
-        vm.prank(guardian);
-        ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
-        vm.prank(managerAdmin);
-        ecoInstance.airdrop(winners, 200_000 ether);
-        // assertEq(tokenInstance.balanceOf(alice), 200_000 ether);
-
-        vm.prank(alice);
-        tokenInstance.delegate(alice);
-        vm.prank(bob);
-        tokenInstance.delegate(bob);
-        vm.prank(charlie);
-        tokenInstance.delegate(charlie);
-
-        vm.roll(365 days);
-
-        // create proposal
-        // part1 - move round allocation from treasury to InvestmentManager instance
-        bytes memory callData1 = abi.encodeWithSignature(
-            "release(address,address,uint256)", address(tokenInstance), address(imInstance), allocation
-        );
-        // part2 - call InvestmentManager to createRound
-        bytes memory callData2 = abi.encodeWithSignature(
-            "createRound(uint64,uint64,uint256,uint256)",
-            uint64(block.timestamp + 7 days),
-            uint64(90 * 24 * 60 * 60),
-            target,
-            allocation
-        );
-        address[] memory to = new address[](2);
-        to[0] = address(treasuryInstance);
-        to[1] = address(imInstance);
-        uint256[] memory values = new uint256[](2);
-        values[0] = 0;
-        values[1] = 0;
-        bytes[] memory calldatas = new bytes[](2);
-        calldatas[0] = callData1;
-        calldatas[1] = callData2;
-
-        vm.prank(alice);
-        uint256 proposalId = govInstance.propose(to, values, calldatas, "Proposal #2: create funding round 1");
-
-        vm.roll(365 days + 7200 + 1);
-        IGovernor.ProposalState state1 = govInstance.state(proposalId);
-        assertTrue(state1 == IGovernor.ProposalState.Active); //proposal active
-
-        vm.prank(alice);
-        govInstance.castVote(proposalId, 1);
-        vm.prank(bob);
-        govInstance.castVote(proposalId, 1);
-        vm.prank(charlie);
-        govInstance.castVote(proposalId, 1);
-
-        vm.roll(365 days + 7200 + 50400 + 1);
-
-        IGovernor.ProposalState state4 = govInstance.state(proposalId);
-        assertTrue(state4 == IGovernor.ProposalState.Succeeded); //proposal succeded
-
-        bytes32 descHash = keccak256(abi.encodePacked("Proposal #2: create funding round 1"));
-
-        govInstance.queue(to, values, calldatas, descHash);
-
-        IGovernor.ProposalState state5 = govInstance.state(proposalId);
-        assertTrue(state5 == IGovernor.ProposalState.Queued); //proposal queued
-
-        uint256 eta = govInstance.proposalEta(proposalId);
-        vm.warp(eta + 1);
-        vm.roll(eta + 1);
-        govInstance.execute(to, values, calldatas, descHash);
-        IGovernor.ProposalState state7 = govInstance.state(proposalId);
-
-        assertTrue(state7 == IGovernor.ProposalState.Executed); //proposal executed
+    function _containsAddress(address[] memory addresses, address target) private pure returns (bool) {
+        for (uint256 i = 0; i < addresses.length; i++) {
+            if (addresses[i] == target) {
+                return true;
+            }
+        }
+        return false;
     }
 }
