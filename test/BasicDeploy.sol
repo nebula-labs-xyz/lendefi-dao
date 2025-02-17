@@ -19,6 +19,8 @@ import {LendefiGovernor} from "../contracts/ecosystem/LendefiGovernor.sol";
 import {LendefiGovernorV2} from "../contracts/upgrades/LendefiGovernorV2.sol";
 import {LendefiTimelock} from "../contracts/ecosystem/LendefiTimelock.sol";
 import {LendefiTimelockV2} from "../contracts/upgrades/LendefiTimelockV2.sol";
+import {InvestmentManager} from "../contracts/ecosystem/InvestmentManager.sol";
+import {InvestmentManagerV2} from "../contracts/upgrades/InvestmentManagerV2.sol";
 import {TimelockControllerUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
 import {Upgrades, Options} from "openzeppelin-foundry-upgrades/Upgrades.sol";
@@ -38,6 +40,7 @@ contract BasicDeploy is Test {
     bytes32 internal constant BURNER_ROLE = keccak256("BURNER_ROLE");
     bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
     bytes32 internal constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
+    bytes32 internal constant DAO_ROLE = keccak256("DAO_ROLE");
 
     uint256 constant INIT_BALANCE_USDC = 100_000_000e6;
     uint256 constant INITIAL_SUPPLY = 50_000_000 ether;
@@ -62,6 +65,7 @@ contract BasicDeploy is Test {
     LendefiTimelock internal timelockInstance;
     LendefiGovernor internal govInstance;
     Treasury internal treasuryInstance;
+    InvestmentManager internal managerInstance;
     USDC internal usdcInstance; // mock usdc
     WETH9 internal wethInstance;
     WETHPriceConsumerV3 internal oracleInstance;
@@ -242,6 +246,61 @@ contract BasicDeploy is Test {
         LendefiGovernorV2 govInstanceV2 = LendefiGovernorV2(proxy2);
         assertEq(govInstanceV2.uupsVersion(), 2);
         assertFalse(govImplAddressV2 == govImplAddressV1);
+    }
+
+    function deployIMUpgrade() internal {
+        vm.warp(365 days);
+        // token deploy
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
+        tokenInstance = GovernanceToken(proxy);
+        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(tokenInstance) == tokenImplementation);
+        // timelock deploy
+        uint256 timelockDelay = 24 * 60 * 60;
+        address[] memory temp = new address[](1);
+        temp[0] = ethereum;
+        bytes memory data2 = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
+        address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data2));
+        timelockInstance = LendefiTimelock(proxy2);
+        address tlImplementation = Upgrades.getImplementationAddress(proxy2);
+        assertFalse(address(timelockInstance) == tlImplementation);
+        //deploy Treasury
+        bytes memory data3 = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
+        address payable proxy3 = payable(Upgrades.deployUUPSProxy("Treasury.sol", data3));
+        treasuryInstance = Treasury(proxy3);
+        address implAddressV1 = Upgrades.getImplementationAddress(proxy3);
+        assertFalse(address(treasuryInstance) == implAddressV1);
+
+        // deploy Investment Manager
+        bytes memory data4 = abi.encodeCall(
+            InvestmentManager.initialize,
+            (address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian)
+        );
+        address payable proxy4 = payable(Upgrades.deployUUPSProxy("InvestmentManager.sol", data4));
+        managerInstance = InvestmentManager(proxy4);
+        address implementation = Upgrades.getImplementationAddress(proxy4);
+        assertFalse(address(managerInstance) == implementation);
+
+        // upgrade InvestmentManager
+        vm.prank(guardian);
+        managerInstance.grantRole(UPGRADER_ROLE, managerAdmin);
+
+        vm.startPrank(managerAdmin);
+        Upgrades.upgradeProxy(proxy4, "InvestmentManagerV2.sol:InvestmentManagerV2", "", guardian);
+        vm.stopPrank();
+
+        address implAddressV2 = Upgrades.getImplementationAddress(proxy4);
+        InvestmentManagerV2 imInstanceV2 = InvestmentManagerV2(proxy4);
+        assertEq(imInstanceV2.version(), 2);
+        assertFalse(implAddressV2 == implAddressV1);
+
+        bool isUpgrader = imInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin);
+        assertTrue(isUpgrader == true);
+
+        vm.prank(guardian);
+        imInstanceV2.revokeRole(UPGRADER_ROLE, managerAdmin);
+        assertFalse(imInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin) == true);
     }
 
     function deployComplete() internal {
