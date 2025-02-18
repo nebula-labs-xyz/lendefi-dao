@@ -71,7 +71,7 @@ contract Treasury is
             _grantRole(MANAGER_ROLE, timelock);
 
             _start = SafeCast.toUint64(block.timestamp - 180 days);
-            _duration = SafeCast.toUint64(1095 days - 180 days);
+            _duration = SafeCast.toUint64(1095 days);
             version++;
             emit Initialized(msg.sender);
         } else {
@@ -101,6 +101,7 @@ contract Treasury is
      */
     function release(address to, uint256 amount) external nonReentrant whenNotPaused onlyRole(MANAGER_ROLE) {
         uint256 vested = releasable();
+        if (to == address(0)) revert CustomError({msg: "ZERO_ADDRESS"});
         if (amount > vested) revert CustomError({msg: "NOT_ENOUGH_VESTED"});
         _released += amount;
         emit EtherReleased(to, amount);
@@ -116,6 +117,7 @@ contract Treasury is
      */
     function release(address token, address to, uint256 amount) external whenNotPaused onlyRole(MANAGER_ROLE) {
         uint256 vested = releasable(token);
+        if (to == address(0)) revert CustomError({msg: "ZERO_ADDRESS"});
         if (amount > vested) revert CustomError({msg: "NOT_ENOUGH_VESTED"});
         _erc20Released[token] += amount;
         emit ERC20Released(token, to, amount);
