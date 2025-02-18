@@ -2,7 +2,6 @@
 pragma solidity ^0.8.23;
 
 import "../BasicDeploy.sol"; // solhint-disable-line
-import {Treasury} from "../../contracts/ecosystem/Treasury.sol"; // Path to your contract
 
 contract TreasuryTest is BasicDeploy {
     address public owner = guardian;
