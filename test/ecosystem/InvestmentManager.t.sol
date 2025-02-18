@@ -840,14 +840,14 @@ contract InvestmentManagerTest is BasicDeploy {
     function testCannotCancelWithoutInvestment() public {
         address investor = address(0x123);
 
-        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        uint32 roundId = _setupActiveRound();
 
         vm.prank(investor);
         vm.expectRevert("NO_INVESTMENT");
         manager.cancelInvestment(roundId);
     }
 
-    function testCannotCancelAfterRoundEnd() public {
+    function testCannotCancelWhenRoundNotActive() public {
         address investor = address(0x123);
         vm.deal(investor, 10 ether);
 
@@ -864,9 +864,11 @@ contract InvestmentManagerTest is BasicDeploy {
         manager.investEther{value: 10 ether}(roundId);
 
         vm.warp(block.timestamp + 8 days);
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
 
         vm.prank(investor);
-        vm.expectRevert("ROUND_ENDED");
+        vm.expectRevert("ROUND_NOT_ACTIVE");
         manager.cancelInvestment(roundId);
     }
 
@@ -2303,11 +2305,14 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.startPrank(guardian);
         manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
 
+        // Expect InvestorAllocationRemoved event with correct parameters
         vm.expectEmit(true, true, false, true);
         emit InvestorAllocationRemoved(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
         manager.removeInvestorAllocation(roundId, alice);
         vm.stopPrank();
 
+        // Verify allocation was removed
         (uint256 allocEth, uint256 allocToken,,) = manager.getInvestorDetails(roundId, alice);
         assertEq(allocEth, 0, "ETH allocation should be zero");
         assertEq(allocToken, 0, "Token allocation should be zero");
@@ -2566,7 +2571,7 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.startPrank(address(timelockInstance));
         treasuryInstance.release(address(tokenInstance), address(manager), 1000e18);
         uint32 roundId =
-            manager.createRound(uint64(block.timestamp + 1 days), 15 days, 100 ether, 1000e18, 365 days, 730 days);
+            manager.createRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18, 365 days, 730 days);
         vm.stopPrank();
 
         vm.warp(block.timestamp + 1 days);
