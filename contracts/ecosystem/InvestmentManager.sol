@@ -51,7 +51,6 @@ contract InvestmentManager is
     address public timelock;
     address public treasury;
     uint256 public supply;
-    uint256 public totalAllocation;
     uint32 public version;
 
     Round[] public rounds;
@@ -314,14 +313,14 @@ contract InvestmentManager is
         Round storage currentRound = rounds[roundId];
         require(uint8(currentRound.status) < uint8(RoundStatus.COMPLETED), "INVALID_ROUND_STATUS");
 
-        Allocation storage investment = investorAllocations[roundId][investor];
-        require(investment.etherAmount == 0 && investment.tokenAmount == 0, "ALLOCATION_EXISTS");
+        Allocation storage item = investorAllocations[roundId][investor];
+        require(item.etherAmount == 0 && item.tokenAmount == 0, "ALLOCATION_EXISTS");
 
         uint256 newTotal = totalRoundAllocations[roundId] + tokenAmount;
         require(newTotal <= currentRound.tokenAllocation, "EXCEEDS_ROUND_ALLOCATION");
 
-        investment.etherAmount = ethAmount;
-        investment.tokenAmount = tokenAmount;
+        item.etherAmount = ethAmount;
+        item.tokenAmount = tokenAmount;
         totalRoundAllocations[roundId] = newTotal;
 
         emit InvestorAllocated(roundId, investor, ethAmount, tokenAmount);
@@ -365,41 +364,40 @@ contract InvestmentManager is
             "INVALID_ROUND_STATUS"
         );
 
-        Allocation storage investment = investorAllocations[roundId][investor];
-        require(investment.etherAmount > 0 || investment.tokenAmount > 0, "NO_ALLOCATION_EXISTS");
+        Allocation storage item = investorAllocations[roundId][investor];
+        uint256 etherAmount = item.etherAmount;
+        uint256 tokenAmount = item.tokenAmount;
+        require(etherAmount > 0 && tokenAmount > 0, "NO_ALLOCATION_EXISTS");
         require(investorPositions[roundId][investor] == 0, "INVESTOR_HAS_ACTIVE_POSITION");
 
-        uint256 tokenAmount = investment.tokenAmount;
         totalRoundAllocations[roundId] -= tokenAmount;
-        emit InvestorAllocationRemoved(roundId, investor, investment.etherAmount, tokenAmount);
-        investment.etherAmount = 0;
-        investment.tokenAmount = 0;
+        item.etherAmount = 0;
+        item.tokenAmount = 0;
+        emit InvestorAllocationRemoved(roundId, investor, etherAmount, tokenAmount);
     }
 
     /**
-     * @notice Allows investors to cancel their investment before round ends
-     * @dev Refunds the investor's ETH and updates round state
+     * @notice Allows investors to cancel their investment and receive a refund
+     * @dev Processes investment cancellation and ETH refund
      * @dev Requirements:
      *      - Round exists (validRound modifier)
+     *      - Round is active (activeRound modifier)
      *      - Protected against reentrancy (nonReentrant modifier)
-     *      - Round has not ended
-     *      - Caller has an active investment
+     *      - Caller must have an active investment
      * @dev State Changes:
      *      - Sets investor's position to 0
      *      - Decrements round's total ETH invested
      *      - Decrements round's participant count
      *      - Removes investor from round's investor list
      * @param roundId The identifier of the round to cancel investment from
-     * @custom:throws ROUND_ENDED if round end time has passed
      * @custom:throws NO_INVESTMENT if caller has no active investment
-     * @custom:throws INVALID_ROUND if roundId is invalid
      * @custom:emits CancelInvestment when investment is successfully cancelled
      * @custom:security Uses nonReentrant modifier to prevent reentrancy attacks
      * @custom:security Uses Address.sendValue for safe ETH transfer
+     * @custom:security Updates state before external calls
      */
-    function cancelInvestment(uint32 roundId) external validRound(roundId) nonReentrant {
+    function cancelInvestment(uint32 roundId) external validRound(roundId) activeRound(roundId) nonReentrant {
         Round storage currentRound = rounds[roundId];
-        require(block.timestamp <= currentRound.endTime, "ROUND_ENDED");
 
         uint256 investedAmount = investorPositions[roundId][msg.sender];
         require(investedAmount > 0, "NO_INVESTMENT");
@@ -433,8 +431,7 @@ contract InvestmentManager is
      *      5. Transfers accumulated ETH to treasury
      * @param roundId The identifier of the round to finalize
      * @custom:throws INVALID_ROUND_STATUS if round is not in COMPLETED status
-     * @custom:throws NOTHING_INVESTED if no ETH was invested in the round
-     * @custom:throws WITHDRAWAL_FAILED if ETH transfer to treasury fails
+     * @custom:throws Address: insufficient balance if ETH transfer to treasury fails
      * @custom:emits RoundFinalized with final round statistics
      * @custom:security Uses nonReentrant modifier to prevent reentrancy
      * @custom:security Uses SafeERC20 for token transfers
@@ -452,8 +449,8 @@ contract InvestmentManager is
             uint256 investedAmount = investorPositions[roundId][investor];
             if (investedAmount == 0) continue;
 
-            Allocation storage allocation = investorAllocations[roundId][investor];
-            uint256 tokenAmount = (investedAmount * allocation.tokenAmount) / allocation.etherAmount;
+            Allocation storage item = investorAllocations[roundId][investor];
+            uint256 tokenAmount = item.tokenAmount;
 
             address vestingContract = _deployVestingContract(investor, tokenAmount, roundId);
             vestingContracts[roundId][investor] = vestingContract;
@@ -469,9 +466,7 @@ contract InvestmentManager is
 
         uint256 amount = currentRound.etherInvested; // Cache the value
         emit RoundFinalized(msg.sender, roundId, amount, currentRound.tokenDistributed);
-
-        (bool success,) = payable(treasury).call{value: amount}("");
-        require(success, "WITHDRAWAL_FAILED");
+        payable(treasury).sendValue(amount);
     }
 
     /**
@@ -664,7 +659,7 @@ contract InvestmentManager is
         Round storage currentRound = rounds[roundId];
         // require(currentRound.status == RoundStatus.ACTIVE, "ROUND_NOT_ACTIVE");
         require(block.timestamp < currentRound.endTime, "ROUND_ENDED");
-        require(currentRound.participants < 50, "ROUND_OVERSUBSCRIBED");
+        require(currentRound.participants < MAX_INVESTORS_PER_ROUND, "ROUND_OVERSUBSCRIBED");
 
         Allocation storage allocation = investorAllocations[roundId][msg.sender];
         require(allocation.etherAmount > 0, "NO_ALLOCATION");
