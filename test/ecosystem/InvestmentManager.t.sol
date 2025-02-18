@@ -8,26 +8,23 @@ import {IINVMANAGER} from "../../contracts/interfaces/IInvestmentManager.sol";
 import {InvestorVesting} from "../../contracts/ecosystem/InvestorVesting.sol";
 
 contract InvestmentManagerTest is BasicDeploy {
-    address public constant ADMIN = address(0x1);
-    address public constant MANAGER = address(0x2);
-    address public constant TREASURY = address(0x3);
-    address public constant TIMELOCK = address(0x4);
+    // Constants
+    address private constant ADMIN = address(0x1);
+    address private constant MANAGER = address(0x2);
+    address private constant TREASURY = address(0x3);
+    address private constant TIMELOCK = address(0x4);
 
-    uint256 public constant MIN_DURATION = 5 days;
+    uint256 private constant MIN_DURATION = 5 days;
     uint256 private constant MAX_DURATION = 90 days;
-    uint256 public constant TEST_SUPPLY = 1_000_000e18;
+    uint256 private constant TEST_SUPPLY = 1_000_000e18;
+    uint256 private constant INVESTMENT_AMOUNT = 5 ether;
+    uint256 private constant TOKEN_ALLOCATION = 100e18;
 
-    // Test addresses
-    address public constant INVESTOR = address(0x123);
-    address public constant NON_PAUSER = address(0x456);
+    address private constant INVESTOR = address(0x123);
+    address private constant NON_PAUSER = address(0x456);
 
-    // Test constants
-    uint256 public constant INVESTMENT_AMOUNT = 5 ether;
-    uint256 public constant TOKEN_ALLOCATION = 100e18;
+    InvestmentManager private manager;
 
-    InvestmentManager public manager;
-
-    // Events
     event Received(address indexed src, uint256 amount);
     event Paused(address account);
     event Unpaused(address account);
@@ -58,32 +55,11 @@ contract InvestmentManagerTest is BasicDeploy {
 
     function setUp() public {
         deployComplete();
-        assertEq(tokenInstance.totalSupply(), 0);
-        // this is the TGE
-        vm.startPrank(guardian);
-        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
-        uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
-        uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
-
-        assertEq(ecoBal, 22_000_000 ether);
-        assertEq(treasuryBal, 28_000_000 ether);
-        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
-
-        // deploy Investment Manager
-        bytes memory data = abi.encodeCall(
-            InvestmentManager.initialize,
-            (address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian)
-        );
-        address payable proxy = payable(Upgrades.deployUUPSProxy("InvestmentManager.sol", data));
-        manager = InvestmentManager(proxy);
-        address implementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(manager) == implementation);
-
-        treasuryInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
-        vm.stopPrank();
+        _setupToken();
+        _deployManager();
     }
-
     // ============ Reetrancy Test ============
+
     function testRevertReentrancyOnCancelInvestment() public {
         address investor = address(this);
         vm.deal(investor, INVESTMENT_AMOUNT);
@@ -2216,7 +2192,6 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.stopPrank();
 
         // Wait for round to end
-        // Wait for round to end
         vm.warp(start + duration + 1);
 
         // Complete round
@@ -2429,7 +2404,153 @@ contract InvestmentManagerTest is BasicDeploy {
         manager.removeInvestorAllocation(999, alice);
         vm.stopPrank();
     }
-    // ============ Helpers ============
+
+    function testRoundStatusTransitions() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        IINVMANAGER.Round memory round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.PENDING));
+
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+        round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.ACTIVE));
+
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, alice, 100 ether, 1000e18);
+        vm.deal(alice, 100 ether);
+        vm.prank(alice);
+        manager.investEther{value: 100 ether}(roundId);
+        round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.COMPLETED));
+
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(guardian);
+        manager.finalizeRound(roundId);
+        round = manager.getRoundInfo(roundId);
+        assertEq(uint8(round.status), uint8(IINVMANAGER.RoundStatus.FINALIZED));
+    }
+
+    function testMaximumParticipantsLimit() public {
+        // Create round with sufficient capacity for all investors
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), TOKEN_ALLOCATION * 100);
+        uint32 roundId = manager.createRound(
+            uint64(block.timestamp + 1 days), 7 days, 100 ether, TOKEN_ALLOCATION * 100, 365 days, 730 days
+        );
+        vm.stopPrank();
+
+        // Activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        // Fill round with maximum participants
+        for (uint256 i = 1; i <= 50; i++) {
+            address investor = address(uint160(i));
+            vm.prank(guardian);
+            manager.addInvestorAllocation(roundId, investor, 1 ether, TOKEN_ALLOCATION);
+
+            vm.deal(investor, 1 ether);
+            vm.prank(investor);
+            manager.investEther{value: 1 ether}(roundId);
+        }
+
+        // Try to invest with one more participant
+        address extraInvestor = address(uint160(51));
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, extraInvestor, 1 ether, TOKEN_ALLOCATION);
+        vm.deal(extraInvestor, 1 ether);
+
+        vm.prank(extraInvestor);
+        vm.expectRevert("ROUND_OVERSUBSCRIBED");
+        manager.investEther{value: 1 ether}(roundId);
+    }
+
+    function testVestingScheduleCalculation() public {
+        // Setup vesting parameters
+        uint64 vestingCliff = 365 days;
+        uint64 vestingDuration = 730 days;
+        uint256 investAmount = 10 ether;
+        uint256 tokenAmount = 1000e18;
+
+        // Create and setup round
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, investAmount, tokenAmount);
+
+        // Add investor allocation
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, investAmount, tokenAmount);
+        vm.stopPrank();
+
+        // Activate round and make investment
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.deal(alice, investAmount);
+        vm.prank(alice);
+        manager.investEther{value: investAmount}(roundId);
+
+        // Finalize round to deploy vesting contract
+        vm.warp(block.timestamp + 8 days);
+        vm.prank(guardian);
+        manager.finalizeRound(roundId);
+
+        // Get vesting contract
+        (,,, address vestingAddress) = manager.getInvestorDetails(roundId, alice);
+        InvestorVesting vestingContract = InvestorVesting(vestingAddress);
+
+        // Verify initial vesting parameters
+        uint256 expectedStart = block.timestamp + vestingCliff;
+        assertEq(vestingContract.start(), expectedStart);
+        assertEq(vestingContract.duration(), vestingDuration);
+        assertEq(vestingContract.end(), expectedStart + vestingDuration);
+
+        // Test before cliff
+        vm.warp(expectedStart - 1);
+        // Try to release tokens
+        vestingContract.release();
+        uint256 vested = vestingContract.releasable();
+        assertEq(0, vested);
+        assertEq(0, tokenInstance.balanceOf(alice));
+
+        // Test at 50% vesting duration
+        vm.warp(expectedStart + vestingDuration / 2);
+        uint256 expectedHalf = tokenAmount / 2;
+        assertApproxEqRel(vestingContract.releasable(), expectedHalf, 0.01e18);
+
+        // Test at full vesting
+        vm.warp(expectedStart + vestingDuration);
+        assertEq(vestingContract.releasable(), tokenAmount);
+    }
+
+    function _setupToken() private {
+        assertEq(tokenInstance.totalSupply(), 0);
+        vm.startPrank(guardian);
+        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
+        uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
+        uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
+
+        assertEq(ecoBal, 22_000_000 ether);
+        assertEq(treasuryBal, 28_000_000 ether);
+        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
+        vm.stopPrank();
+    }
+
+    function _deployManager() private {
+        bytes memory data = abi.encodeCall(
+            InvestmentManager.initialize,
+            (address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian)
+        );
+        address payable proxy = payable(Upgrades.deployUUPSProxy("InvestmentManager.sol", data));
+        manager = InvestmentManager(proxy);
+        address implementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(manager) == implementation);
+
+        vm.prank(guardian);
+        treasuryInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
+    }
 
     function _createTestRound(uint64 start, uint64 duration, uint256 ethTarget, uint256 tokenAlloc)
         private
@@ -2448,7 +2569,6 @@ contract InvestmentManagerTest is BasicDeploy {
             manager.createRound(uint64(block.timestamp + 1 days), 15 days, 100 ether, 1000e18, 365 days, 730 days);
         vm.stopPrank();
 
-        // Activate round
         vm.warp(block.timestamp + 1 days);
         vm.prank(guardian);
         manager.activateRound(roundId);
