@@ -55,13 +55,23 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
     /**
      * @dev Allows the DAO to cancel the contract in case the team member is fired.
      *      Release vested amount and refund the remainder to timelock.
+     *      Can be called multiple times but will only transfer remaining balance.
      */
     function cancelContract() external nonReentrant onlyTimelock {
-        release();
+        // Release vested tokens to beneficiary first
+        if (releasable() > 0) {
+            release();
+        }
+
+        // Get current balance
         IERC20 tokenInstance = IERC20(_token);
         uint256 remainder = tokenInstance.balanceOf(address(this));
-        emit Cancelled(remainder);
-        SafeERC20.safeTransfer(tokenInstance, _timelock, remainder);
+
+        // Only emit event and transfer if there are tokens to transfer
+        if (remainder > 0) {
+            emit Cancelled(remainder);
+            SafeERC20.safeTransfer(tokenInstance, _timelock, remainder);
+        }
     }
 
     /**
