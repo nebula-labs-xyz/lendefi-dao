@@ -25,6 +25,8 @@ import {Upgrades, Options} from "openzeppelin-foundry-upgrades/Upgrades.sol";
 import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {TimelockV2} from "../contracts/upgrades/TimelockV2.sol";
+import {TeamManager} from "../contracts/ecosystem/TeamManager.sol";
+import {TeamManagerV2} from "../contracts/upgrades/TeamManagerV2.sol";
 
 contract BasicDeploy is Test {
     event Upgrade(address indexed src, address indexed implementation);
@@ -66,6 +68,7 @@ contract BasicDeploy is Test {
     LendefiGovernor internal govInstance;
     Treasury internal treasuryInstance;
     InvestmentManager internal managerInstance;
+    TeamManager internal tmInstance;
     USDC internal usdcInstance; // mock usdc
     WETH9 internal wethInstance;
     WETHPriceConsumerV3 internal oracleInstance;
@@ -247,6 +250,40 @@ contract BasicDeploy is Test {
         assertFalse(imInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin) == true);
     }
 
+    function deployTeamManagerUpgrade() internal {
+        vm.warp(365 days);
+
+        deployComplete();
+
+        // deploy Team Manager
+        bytes memory data =
+            abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("TeamManager.sol", data));
+        tmInstance = TeamManager(proxy);
+        address implAddressV1 = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(tmInstance) == implAddressV1);
+
+        // upgrade Team Manager
+        vm.prank(guardian);
+        tmInstance.grantRole(UPGRADER_ROLE, managerAdmin);
+
+        vm.startPrank(managerAdmin);
+        Upgrades.upgradeProxy(proxy, "TeamManagerV2.sol:TeamManagerV2", "", guardian);
+        vm.stopPrank();
+
+        address implAddressV2 = Upgrades.getImplementationAddress(proxy);
+        TeamManagerV2 tmInstanceV2 = TeamManagerV2(proxy);
+        assertEq(tmInstanceV2.version(), 2);
+        assertFalse(implAddressV2 == implAddressV1);
+
+        bool isUpgrader = tmInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin);
+        assertTrue(isUpgrader == true);
+
+        vm.prank(guardian);
+        tmInstanceV2.revokeRole(UPGRADER_ROLE, managerAdmin);
+        assertFalse(tmInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin) == true);
+    }
+
     function deployComplete() internal {
         vm.warp(365 days);
         _deployToken();
@@ -330,5 +367,15 @@ contract BasicDeploy is Test {
         managerInstance = InvestmentManager(proxy);
         address implementation = Upgrades.getImplementationAddress(proxy);
         assertFalse(address(managerInstance) == implementation);
+    }
+
+    function _deployTeamManager() internal {
+        // deploy Team Manager
+        bytes memory data =
+            abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("TeamManager.sol", data));
+        tmInstance = TeamManager(proxy);
+        address implementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(tmInstance) == implementation);
     }
 }
