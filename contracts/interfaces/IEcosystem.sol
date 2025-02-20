@@ -2,8 +2,8 @@
 pragma solidity 0.8.23;
 /**
  * @title Ecosystem Interface
- * @author Nebula Labs LLC
  * @custom:security-contact security@nebula-labs.xyz
+ * @custom:copyright Copyright (c) 2025 Nebula Holding Inc. All rights reserved.
  */
 
 interface IECOSYSTEM {
@@ -93,6 +93,8 @@ interface IECOSYSTEM {
      * @dev Creates vesting contracts for partners and funds them.
      * @param account address
      * @param amount token allocation
+     * @param cliff cliff period
+     * @param duration vesting duration
      * Emits a {AddPartner} event.
      */
     function addPartner(address account, uint256 amount, uint256 cliff, uint256 duration) external;
