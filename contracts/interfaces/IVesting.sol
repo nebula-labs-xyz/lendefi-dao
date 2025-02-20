@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
 /**
- * @title Vesting Interface
- * @author Nebula Labs LLC
+ * @title Interface for Lendefi DAO Investor Vesting Contract
  * @custom:security-contact security@nebula-labs.xyz
  */
 
