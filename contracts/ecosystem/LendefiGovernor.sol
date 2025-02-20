@@ -3,7 +3,7 @@ pragma solidity 0.8.23;
 /**
  * @title Lendefi DAO Governor
  * @notice Standard OZUpgradeable governor, small modification with UUPS
- * @author Nebula Labs LLC
+ * @dev Implements a secure and upgradeable DAO governor
  * @custom:security-contact security@nebula-labs.xyz
  */
 
