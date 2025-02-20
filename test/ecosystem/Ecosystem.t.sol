@@ -3,6 +3,8 @@ pragma solidity ^0.8.23;
 
 import {BasicDeploy} from "../BasicDeploy.sol";
 import {VestingWallet} from "@openzeppelin/contracts/finance/VestingWallet.sol";
+import {Ecosystem} from "../../contracts/ecosystem/Ecosystem.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract EcosystemTest is BasicDeploy {
     event Burn(address indexed src, uint256 amount);
@@ -32,12 +34,85 @@ contract EcosystemTest is BasicDeploy {
         (success,) = payable(address(ecoInstance)).call{value: 100 ether}("");
     }
 
+    // Test: ReceiveAndFallback
+    function testReceiveFallback() public {
+        // Setup test accounts with ETH
+        vm.deal(alice, 2 ether);
+
+        vm.startPrank(alice);
+
+        // Test sending ETH with empty calldata (calls receive)
+        (bool success,) = address(ecoInstance).call{value: 1 ether}("");
+        assertFalse(success);
+
+        // Test sending ETH with non-empty calldata (calls fallback)
+        (success,) = address(ecoInstance).call{value: 1 ether}(hex"dead");
+        assertFalse(success);
+
+        // Test sending with no ETH but with data
+        (success,) = address(ecoInstance).call(hex"dead");
+        assertFalse(success);
+
+        vm.stopPrank();
+
+        // Verify contract has no ETH
+        assertEq(address(ecoInstance).balance, 0);
+    }
+
     // Test: RevertInitialization
     function testRevertInitialization() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
         ecoInstance.initialize(address(tokenInstance), guardian, pauser);
+    }
+
+    function testProxyInitializeSuccess() public {
+        // Deploy new proxy instance
+        Ecosystem implementation = new Ecosystem();
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), "");
+        Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
+
+        // Initialize with valid addresses
+        ecosystem.initialize(address(tokenInstance), guardian, pauser);
+
+        // Verify initialization
+        assertTrue(ecosystem.hasRole(DEFAULT_ADMIN_ROLE, guardian));
+        assertTrue(ecosystem.hasRole(PAUSER_ROLE, pauser));
+        assertFalse(ecosystem.paused());
+    }
+
+    function testRevertDoubleInitialize() public {
+        // Deploy new proxy instance
+        Ecosystem implementation = new Ecosystem();
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), "");
+        Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
+
+        // First initialization
+        ecosystem.initialize(address(tokenInstance), guardian, pauser);
+
+        // Attempt second initialization
+        vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
+        ecosystem.initialize(address(tokenInstance), guardian, pauser);
+    }
+
+    function testRevertProxyInitializeZeroAddresses() public {
+        // Deploy new proxy instance
+        Ecosystem implementation = new Ecosystem();
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), "");
+        Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
+
+        // Test zero token address
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
+        ecosystem.initialize(address(0), guardian, pauser);
+
+        // Test zero guardian address
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
+        ecosystem.initialize(address(tokenInstance), address(0), pauser);
+
+        // Test zero pauser address
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
+        ecosystem.initialize(address(tokenInstance), guardian, address(0));
     }
 
     // Test: Pause
