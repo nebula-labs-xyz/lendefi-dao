@@ -106,7 +106,7 @@ contract GovernanceToken is
      * @param treasury treasury contract address
      */
     function initializeTGE(address ecosystem, address treasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        require(ecosystem != address(0x0) && treasury != address(0x0), "ZERO_ADDRESS");
+        if (ecosystem == address(0x0) || treasury == address(0x0)) revert CustomError({msg: "ZERO_ADDRESS"});
         if (tge > 0) revert CustomError({msg: "TGE_ALREADY_INITIALIZED"});
         ++tge;
 
