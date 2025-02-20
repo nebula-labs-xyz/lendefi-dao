@@ -2,7 +2,6 @@
 pragma solidity 0.8.23;
 /**
  * @title IERC20Bridgable Interface
- * @author Nebula Labs LLC
  * @custom:security-contact security@nebula-labs.xyz
  */
 
