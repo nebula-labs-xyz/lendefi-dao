@@ -14,23 +14,59 @@ contract GovernanceTokenTest is BasicDeploy {
     function setUp() public {
         deployComplete();
         assertEq(tokenInstance.totalSupply(), 0);
-        // this is the TGE
-        vm.prank(guardian);
-        vm.expectEmit();
-        emit TGE(INITIAL_SUPPLY);
-        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
-        uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
-        uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
-
-        assertEq(ecoBal, 22_000_000 ether);
-        assertEq(treasuryBal, 28_000_000 ether);
-        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
 
         vm.prank(guardian);
         ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
     }
 
+    function test_TGE() public {
+        _initializeTGE();
+    }
+
+    function testRevertInitializeTGE_ZeroAddress() public {
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS");
+
+        vm.startPrank(guardian);
+
+        // Test zero ecosystem address
+        vm.expectRevert(expError);
+        tokenInstance.initializeTGE(address(0), address(treasuryInstance));
+
+        // Test zero treasury address
+        vm.expectRevert(expError);
+        tokenInstance.initializeTGE(address(ecoInstance), address(0));
+
+        // Test both zero addresses
+        vm.expectRevert(expError);
+        tokenInstance.initializeTGE(address(0), address(0));
+
+        vm.stopPrank();
+    }
+
+    function testRevertInitializeTGE_AlreadyInitialized() public {
+        vm.startPrank(guardian);
+        // First initialization
+        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
+
+        // Attempt second initialization
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "TGE_ALREADY_INITIALIZED");
+        vm.expectRevert(expError);
+        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
+
+        vm.stopPrank();
+    }
+
+    function testRevertInitializeTGE_Unauthorized() public {
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, DEFAULT_ADMIN_ROLE);
+
+        vm.prank(alice);
+        vm.expectRevert(expError);
+        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
+    }
+
     function test_Burn() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -53,24 +89,6 @@ contract GovernanceTokenTest is BasicDeploy {
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
         tokenInstance.initializeUUPS(guardian);
-    }
-
-    function test_Revert_InitializeTGE_Branch1() public {
-        bytes memory expError = abi.encodeWithSignature(
-            "AccessControlUnauthorizedAccount(address,bytes32)", managerAdmin, DEFAULT_ADMIN_ROLE
-        );
-
-        vm.prank(managerAdmin);
-        vm.expectRevert(expError); // Access Control
-        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
-    }
-
-    function test_Revert_InitializeTGE_Branch2() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "TGE_ALREADY_INITIALIZED");
-        vm.prank(guardian);
-        vm.expectRevert(expError);
-        // vm.expectRevert("ALREADY_INITIALIZED"); // TGE already triggered
-        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
     }
 
     function test_Pause() public {
@@ -97,6 +115,7 @@ contract GovernanceTokenTest is BasicDeploy {
     }
 
     function test_Revert_Transfer_Branch1() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -119,6 +138,7 @@ contract GovernanceTokenTest is BasicDeploy {
     }
 
     function test_BridgeMint() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -140,6 +160,7 @@ contract GovernanceTokenTest is BasicDeploy {
     }
 
     function test_Revert_BridgeMint_Branch1() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -161,6 +182,7 @@ contract GovernanceTokenTest is BasicDeploy {
     }
 
     function test_Revert_BridgeMint_Branch2() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -187,6 +209,7 @@ contract GovernanceTokenTest is BasicDeploy {
     }
 
     function test_Revert_BridgeMint_Branch3() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -207,6 +230,7 @@ contract GovernanceTokenTest is BasicDeploy {
     }
 
     function test_Revert_BridgeMint_Branch4() public {
+        _initializeTGE();
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -224,5 +248,19 @@ contract GovernanceTokenTest is BasicDeploy {
         vm.prank(bridge);
         vm.expectRevert(expError); // compromised bridge
         tokenInstance.bridgeMint(alice, 5001 ether);
+    }
+
+    function _initializeTGE() internal {
+        // this is the TGE
+        vm.prank(guardian);
+        vm.expectEmit();
+        emit TGE(INITIAL_SUPPLY);
+        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
+        uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
+        uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
+
+        assertEq(ecoBal, 22_000_000 ether);
+        assertEq(treasuryBal, 28_000_000 ether);
+        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
     }
 }
