@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.23;
 /**
- * @title Enhanced Investment Manager
+ * @title Enhanced Investment Manager V2 (for testing upgrades)
  * @notice Manages investment rounds and token vesting for the ecosystem
  * @dev Implements a secure and upgradeable investment management system
  * @custom:security-contact security@nebula-labs.xyz
+ * @custom:copyright Copyright (c) 2025 Nebula Holding Inc. All rights reserved.
  */
 
 import {ILENDEFI} from "../interfaces/ILendefi.sol";
@@ -715,6 +716,7 @@ contract InvestmentManagerV2 is
         emit RoundStatusUpdated(roundId, newStatus);
     }
     // ============ Internal Functions ============
+
     /**
      * @notice Authorizes and processes contract upgrades
      * @dev Internal override for UUPS upgrade authorization
@@ -728,8 +730,8 @@ contract InvestmentManagerV2 is
      * @custom:security Role-based access control via UPGRADER_ROLE
      * @custom:security Version tracking for upgrade management
      * @custom:security Inherits OpenZeppelin's UUPSUpgradeable pattern
+     * @inheritdoc UUPSUpgradeable
      */
-
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
         ++version;
         emit Upgrade(msg.sender, newImplementation);
