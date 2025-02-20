@@ -5,7 +5,7 @@ pragma solidity 0.8.23;
  * @title Lendefi DAO Treasury Contract
  * @notice Vesting contract: initialRelease + (36 month duration)
  * @notice Offers flexible withdrawal schedule (gas efficient)
- * @author Nebula Labs LLC
+ * @dev Implements secure and upgradeable DAO treasury with linear vesting
  * @custom:security-contact security@nebula-labs.xysz
  */
 
