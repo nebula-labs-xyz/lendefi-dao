@@ -5,7 +5,7 @@ pragma solidity 0.8.23;
  * @title Lendefi DAO Team Vesting Contract
  * @notice Cancellable Vesting contract
  * @notice Offers flexible withdrawal schedule (gas efficient)
- * @author Nebula Labs LLC
+ * @dev Implements secure linear vesting for the DAO team
  * @custom:security-contact security@nebula-labs.xyz
  */
 
