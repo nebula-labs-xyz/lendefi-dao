@@ -3,7 +3,7 @@ pragma solidity ^0.8.23;
 
 import "../BasicDeploy.sol"; // solhint-disable-line
 
-contract DeploymentsTest is BasicDeploy {
+contract BasicDeployTest is BasicDeploy {
     function test_001_TokenDeploy() public {
         deployTokenUpgrade();
     }
@@ -33,7 +33,21 @@ contract DeploymentsTest is BasicDeploy {
         console.log("timelock: ", address(timelockInstance));
     }
 
-    function test_007_TGE() public {
+    function test_007_InvestmentManagerDeploy() public {
+        deployComplete();
+        _deployInvestmentManager();
+
+        assertFalse(
+            address(managerInstance) == Upgrades.getImplementationAddress(address(managerInstance)),
+            "Implementation should be different from proxy"
+        );
+    }
+
+    function test_008_DeployIMUpgrade() public {
+        deployIMUpgrade();
+    }
+
+    function test_009_TGE() public {
         deployComplete();
         assertEq(tokenInstance.totalSupply(), 0);
         // this is the TGE
