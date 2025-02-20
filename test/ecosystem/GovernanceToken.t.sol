@@ -210,15 +210,14 @@ contract GovernanceTokenTest is BasicDeploy {
 
     function test_Revert_BridgeMint_Branch3() public {
         _initializeTGE();
+        uint256 amount = 20_001 ether;
         // get some tokens
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
         winners[0] = alice;
         vm.prank(managerAdmin);
-        ecoInstance.airdrop(winners, 20000 ether);
-        vm.prank(alice);
-        tokenInstance.burn(10001 ether);
-        assertEq(tokenInstance.balanceOf(alice), 9999 ether);
+        ecoInstance.airdrop(winners, amount);
+
         // give proper access
         vm.prank(guardian);
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
@@ -226,7 +225,7 @@ contract GovernanceTokenTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "BRIDGE_LIMIT");
         vm.prank(bridge);
         vm.expectRevert(expError); // exceeded bridge limit
-        tokenInstance.bridgeMint(alice, 10001 ether);
+        tokenInstance.bridgeMint(alice, amount);
     }
 
     function test_Revert_BridgeMint_Branch4() public {
