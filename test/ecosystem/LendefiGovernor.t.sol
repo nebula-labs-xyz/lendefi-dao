@@ -2,9 +2,8 @@
 pragma solidity ^0.8.23;
 
 import "../BasicDeploy.sol"; // solhint-disable-line
-import {console2} from "forge-std/console2.sol";
+// import {console2} from "forge-std/console2.sol";
 import {LendefiGovernor} from "../../contracts/ecosystem/LendefiGovernor.sol"; // Path to your contract
-import {IVotes} from "@openzeppelin/contracts/governance/utils/IVotes.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {TimelockControllerUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
