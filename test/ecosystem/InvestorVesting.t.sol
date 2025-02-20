@@ -38,6 +38,26 @@ contract InvestorVestingTest is BasicDeploy {
         ecoInstance.airdrop(investors, 200_000 ether); //put some tokens into vesting contract
     }
 
+    function testConstructorZeroAddress() public {
+        // Test zero token address
+        vm.expectRevert("ZERO_ADDRESS");
+        new InvestorVesting(
+            address(0), // zero token address
+            alice,
+            uint64(block.timestamp + 365 days),
+            uint64(730 days)
+        );
+
+        // Test zero beneficiary address
+        vm.expectRevert(abi.encodeWithSignature("OwnableInvalidOwner(address)", address(0)));
+        new InvestorVesting(
+            address(tokenInstance),
+            address(0), // zero beneficiary address
+            uint64(block.timestamp + 365 days),
+            uint64(730 days)
+        );
+    }
+
     // Test case: Check if an investor is added correctly
     function testInvestorAdded() public {
         address owner = vestingContract.owner();
