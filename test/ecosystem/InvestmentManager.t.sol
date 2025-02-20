@@ -2299,24 +2299,24 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(address(treasuryInstance).balance, ethTarget);
     }
 
-    function testRemoveInvestorAllocation() public {
-        uint32 roundId = _setupActiveRound();
+    // function testRemoveInvestorAllocation() public {
+    //     uint32 roundId = _setupActiveRound();
 
-        vm.startPrank(guardian);
-        manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+    //     vm.startPrank(guardian);
+    //     manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
 
-        // Expect InvestorAllocationRemoved event with correct parameters
-        vm.expectEmit(true, true, false, true);
-        emit InvestorAllocationRemoved(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+    //     // Expect InvestorAllocationRemoved event with correct parameters
+    //     vm.expectEmit(true, true, false, true);
+    //     emit InvestorAllocationRemoved(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
 
-        manager.removeInvestorAllocation(roundId, alice);
-        vm.stopPrank();
+    //     manager.removeInvestorAllocation(roundId, alice);
+    //     vm.stopPrank();
 
-        // Verify allocation was removed
-        (uint256 allocEth, uint256 allocToken,,) = manager.getInvestorDetails(roundId, alice);
-        assertEq(allocEth, 0, "ETH allocation should be zero");
-        assertEq(allocToken, 0, "Token allocation should be zero");
-    }
+    //     // Verify allocation was removed
+    //     (uint256 allocEth, uint256 allocToken,,) = manager.getInvestorDetails(roundId, alice);
+    //     assertEq(allocEth, 0, "ETH allocation should be zero");
+    //     assertEq(allocToken, 0, "Token allocation should be zero");
+    // }
 
     function testRemoveInvestorAllocationRevertsForZeroAddress() public {
         uint32 roundId = _setupActiveRound();
@@ -2528,6 +2528,214 @@ contract InvestmentManagerTest is BasicDeploy {
         // Test at full vesting
         vm.warp(expectedStart + vestingDuration);
         assertEq(vestingContract.releasable(), tokenAmount);
+    }
+
+    function testInitializeZeroAddressCombinations() public {
+        InvestmentManager item = new InvestmentManager();
+        // Deploy new proxy instance
+        bytes memory data = abi.encodeCall(
+            InvestmentManager.initialize, (address(0), address(timelockInstance), address(treasuryInstance), guardian)
+        );
+
+        vm.expectRevert("ZERO_ADDRESS_DETECTED");
+        ERC1967Proxy proxy = new ERC1967Proxy(address(item), data);
+
+        // Test: valid token, valid timelock, zero treasury, valid guardian
+        data = abi.encodeCall(
+            InvestmentManager.initialize, (address(tokenInstance), address(0), address(treasuryInstance), guardian)
+        );
+        vm.expectRevert("ZERO_ADDRESS_DETECTED");
+        ERC1967Proxy proxy1 = new ERC1967Proxy(address(item), data);
+
+        // Test: valid token, valid timelock, valid treasury, zero guardian
+        data = abi.encodeCall(
+            InvestmentManager.initialize, (address(tokenInstance), address(timelockInstance), address(0), guardian)
+        );
+        vm.expectRevert("ZERO_ADDRESS_DETECTED");
+        ERC1967Proxy proxy2 = new ERC1967Proxy(address(item), data);
+    }
+
+    function testActivateRoundInvalidStatus() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Activate the round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        // Try to activate again
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.activateRound(roundId);
+    }
+
+    function testAddInvestorAllocationInvalidParameters() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Activate the round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        // Test invalid investor address (zero)
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_INVESTOR");
+        manager.addInvestorAllocation(roundId, address(0), 1 ether, 10e18);
+
+        // Test invalid ETH amount (zero)
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ETH_AMOUNT");
+        manager.addInvestorAllocation(roundId, address(0x123), 0, 10e18);
+
+        // Test invalid token amount (zero)
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_TOKEN_AMOUNT");
+        manager.addInvestorAllocation(roundId, address(0x123), 1 ether, 0);
+
+        // Test invalid round status (completed or cancelled)
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.addInvestorAllocation(roundId, address(0x123), 1 ether, 10e18);
+
+        // Test exceeds round allocation
+        uint32 newRoundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(newRoundId);
+        vm.prank(guardian);
+        vm.expectRevert("EXCEEDS_ROUND_ALLOCATION");
+        manager.addInvestorAllocation(newRoundId, address(0x123), 101 ether, 1001e18);
+
+        // Test allocation already exists
+        vm.prank(guardian);
+        manager.addInvestorAllocation(newRoundId, address(0x123), 1 ether, 10e18);
+        vm.prank(guardian);
+        vm.expectRevert("ALLOCATION_EXISTS");
+        manager.addInvestorAllocation(newRoundId, address(0x123), 2 ether, 20e18);
+    }
+
+    function testRemoveInvestorAllocation() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Warp to start time
+        vm.warp(block.timestamp + 1 days);
+
+        // Activate the round
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        vm.startPrank(guardian);
+        manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        // Expect InvestorAllocationRemoved event with correct parameters
+        vm.expectEmit(true, true, false, true);
+        emit InvestorAllocationRemoved(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
+
+        manager.removeInvestorAllocation(roundId, alice);
+        vm.stopPrank();
+
+        // Verify allocation was removed
+        (uint256 allocEth, uint256 allocToken,,) = manager.getInvestorDetails(roundId, alice);
+        assertEq(allocEth, 0, "ETH allocation should be zero");
+        assertEq(allocToken, 0, "Token allocation should be zero");
+    }
+
+    function testCancelInvestmentInvalidParameters() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Activate the round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+        // Test no active investment
+        vm.prank(address(0x123));
+        vm.expectRevert("NO_INVESTMENT");
+        manager.cancelInvestment(roundId);
+
+        // Test invalid round status (not ACTIVE)
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+        vm.prank(address(0x123));
+        vm.expectRevert("ROUND_NOT_ACTIVE");
+        manager.cancelInvestment(roundId);
+    }
+
+    function testFinalizeRoundInvalidParameters() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Test invalid round status (not COMPLETED)
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.finalizeRound(roundId);
+
+        // Warp to start time and activate round
+        vm.warp(block.timestamp + 1 days);
+        vm.prank(guardian);
+        manager.activateRound(roundId);
+
+        // Add investor allocation
+        vm.prank(guardian);
+        manager.addInvestorAllocation(roundId, address(0x123), 50 ether, 1000e18);
+
+        // Make investment
+        vm.deal(address(0x123), 50 ether);
+        vm.prank(address(0x123));
+        manager.investEther{value: 50 ether}(roundId);
+
+        vm.prank(guardian);
+        vm.expectRevert("INVALID_ROUND_STATUS");
+        manager.finalizeRound(roundId);
+        // Wait for round to end and complete it
+        vm.warp(block.timestamp + 8 days);
+
+        // Empty the contract's ETH balance
+        vm.prank(address(0x123));
+        manager.cancelInvestment(roundId);
+        assertEq(address(0x123).balance, 50 ether);
+    }
+
+    function testClaimRefundInvalidParameters() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Test invalid round status (not CANCELLED)
+        vm.prank(guardian);
+        vm.expectRevert("ROUND_NOT_CANCELLED");
+        manager.claimRefund(roundId);
+
+        // Test no refund available
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+        vm.prank(address(0x123));
+        vm.expectRevert("NO_REFUND_AVAILABLE");
+        manager.claimRefund(roundId);
+    }
+
+    function testGetRefundAmountInvalidParameters() public {
+        uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
+
+        // Test invalid round status (not CANCELLED)
+        assertEq(manager.getRefundAmount(roundId, address(0x123)), 0);
+
+        // Test no refund available
+        vm.prank(guardian);
+        manager.cancelRound(roundId);
+        assertEq(manager.getRefundAmount(roundId, address(0x123)), 0);
+    }
+
+    function testGetCurrentRoundInvalidParameters() public {
+        // Test no active round
+        assertEq(manager.getCurrentRound(), type(uint32).max);
+    }
+
+    function testReceiveFunctionInvalidParameters() public {
+        // Test no active round
+        vm.deal(address(0x123), 1 ether);
+        vm.prank(address(0x123));
+        vm.expectRevert("NO_ACTIVE_ROUND");
+        (bool success,) = address(manager).call{value: 1 ether}("");
+        require(success, "ETH transfer failed");
     }
 
     function _setupToken() private {
