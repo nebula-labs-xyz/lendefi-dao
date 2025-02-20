@@ -75,14 +75,6 @@ interface IECOSYSTEM {
     function airdrop(address[] calldata winners, uint256 amount) external;
 
     /**
-     * @dev Verify airdrop list is valid
-     * @param winners address array
-     * @param amount of tokens
-     * @return true
-     */
-    function verifyAirdrop(address[] calldata winners, uint256 amount) external returns (bool);
-
-    /**
      * @dev Rewards liquidity providers participating in the Nebula Protocol.
      * @param to address
      * @param amount of tokens
@@ -103,7 +95,7 @@ interface IECOSYSTEM {
      * @param amount token allocation
      * Emits a {AddPartner} event.
      */
-    function addPartner(address account, uint256 amount) external;
+    function addPartner(address account, uint256 amount, uint256 cliff, uint256 duration) external;
     /**
      * @dev Getter for the starting reward supply.
      * @return starting reward supply
