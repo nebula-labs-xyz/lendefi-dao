@@ -179,7 +179,12 @@ contract EcosystemV2 is
      * @param partner beneficiary address
      * @param amount token amount
      */
-    function addPartner(address partner, uint256 amount) external nonReentrant whenNotPaused onlyRole(MANAGER_ROLE) {
+    function addPartner(address partner, uint256 amount, uint256 cliff, uint256 duration)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyRole(MANAGER_ROLE)
+    {
         if (partner == address(0)) revert CustomError("INVALID_ADDRESS");
         if (vestingContracts[partner] != address(0)) {
             revert CustomError("PARTNER_EXISTS");
@@ -194,39 +199,12 @@ contract EcosystemV2 is
         issuedPartnership += amount;
 
         VestingWallet vestingContract =
-            new VestingWallet(partner, SafeCast.toUint64(block.timestamp + 365 days), SafeCast.toUint64(730 days));
+            new VestingWallet(partner, SafeCast.toUint64(block.timestamp + cliff), SafeCast.toUint64(duration));
 
         vestingContracts[partner] = address(vestingContract);
 
         emit AddPartner(partner, address(vestingContract), amount);
         TH.safeTransfer(tokenInstance, address(vestingContract), amount);
-    }
-
-    /**
-     * @dev Performs Airdrop verification.
-     * @param winners address array
-     * @param amount token amount per winner
-     * @return verified boolean
-     */
-    function verifyAirdrop(address[] calldata winners, uint256 amount) external view returns (bool verified) {
-        if (amount < 1 ether) revert CustomError("INVALID_AMOUNT");
-        uint256 len = winners.length;
-
-        if (issuedAirDrop + len * amount > airdropSupply) {
-            revert CustomError("AIRDROP_SUPPLY_LIMIT");
-        }
-
-        if (len <= 4000) {
-            verified = true;
-            for (uint256 i; i < len; ++i) {
-                if (winners[i].balance < 0.2e18) {
-                    verified = false;
-                    break;
-                }
-            }
-        } else {
-            revert CustomError("GAS_LIMIT");
-        }
     }
 
     /// @inheritdoc UUPSUpgradeable
