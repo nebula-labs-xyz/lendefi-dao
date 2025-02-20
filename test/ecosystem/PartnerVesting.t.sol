@@ -31,7 +31,7 @@ contract VestingWalletTest is BasicDeploy {
         vm.prank(guardian);
         ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
         vm.prank(managerAdmin);
-        ecoInstance.addPartner(partner, amount);
+        ecoInstance.addPartner(partner, amount, 365 days, 730 days);
 
         vestingAddr = ecoInstance.vestingContracts(partner);
         uint256 bal = tokenInstance.balanceOf(vestingAddr);
