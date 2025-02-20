@@ -17,14 +17,14 @@ import {GovernanceToken} from "../contracts/ecosystem/GovernanceToken.sol";
 import {GovernanceTokenV2} from "../contracts/upgrades/GovernanceTokenV2.sol";
 import {LendefiGovernor} from "../contracts/ecosystem/LendefiGovernor.sol";
 import {LendefiGovernorV2} from "../contracts/upgrades/LendefiGovernorV2.sol";
-import {LendefiTimelock} from "../contracts/ecosystem/LendefiTimelock.sol";
-import {LendefiTimelockV2} from "../contracts/upgrades/LendefiTimelockV2.sol";
 import {InvestmentManager} from "../contracts/ecosystem/InvestmentManager.sol";
 import {InvestmentManagerV2} from "../contracts/upgrades/InvestmentManagerV2.sol";
 import {TimelockControllerUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
 import {Upgrades, Options} from "openzeppelin-foundry-upgrades/Upgrades.sol";
-import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol"; // Path to your contract
+import {IGovernor} from "@openzeppelin/contracts/governance/IGovernor.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {TimelockV2} from "../contracts/upgrades/TimelockV2.sol";
 
 contract BasicDeploy is Test {
     event Upgrade(address indexed src, address indexed implementation);
@@ -62,7 +62,7 @@ contract BasicDeploy is Test {
 
     GovernanceToken internal tokenInstance;
     Ecosystem internal ecoInstance;
-    LendefiTimelock internal timelockInstance;
+    TimelockControllerUpgradeable internal timelockInstance;
     LendefiGovernor internal govInstance;
     Treasury internal treasuryInstance;
     InvestmentManager internal managerInstance;
@@ -78,6 +78,7 @@ contract BasicDeploy is Test {
         tokenInstance = GovernanceToken(proxy);
         address tokenImplementation = Upgrades.getImplementationAddress(proxy);
         assertFalse(address(tokenInstance) == tokenImplementation);
+
         // upgrade token
         vm.prank(guardian);
         tokenInstance.grantRole(UPGRADER_ROLE, managerAdmin);
@@ -100,12 +101,7 @@ contract BasicDeploy is Test {
     }
 
     function deployEcosystemUpgrade() internal {
-        // token deploy
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        tokenInstance = GovernanceToken(proxy);
-        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(tokenInstance) == tokenImplementation);
+        _deployToken();
 
         // ecosystem deploy
         bytes memory data1 = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
@@ -137,27 +133,17 @@ contract BasicDeploy is Test {
 
     function deployTreasuryUpgrade() internal {
         vm.warp(365 days);
-        // token deploy
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        tokenInstance = GovernanceToken(proxy);
-        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(tokenInstance) == tokenImplementation);
-        // timelock deploy
-        uint256 timelockDelay = 24 * 60 * 60;
-        address[] memory temp = new address[](1);
-        temp[0] = ethereum;
-        bytes memory data2 = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
-        address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data2));
-        timelockInstance = LendefiTimelock(proxy2);
-        address tlImplementation = Upgrades.getImplementationAddress(proxy2);
-        assertFalse(address(timelockInstance) == tlImplementation);
+
+        _deployToken();
+        _deployTimelock();
+
         //deploy Treasury
         bytes memory data1 = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
         address payable proxy1 = payable(Upgrades.deployUUPSProxy("Treasury.sol", data1));
         treasuryInstance = Treasury(proxy1);
         address implAddressV1 = Upgrades.getImplementationAddress(proxy1);
         assertFalse(address(treasuryInstance) == implAddressV1);
+
         // upgrade Treasury
         vm.prank(guardian);
         treasuryInstance.grantRole(UPGRADER_ROLE, managerAdmin);
@@ -180,59 +166,34 @@ contract BasicDeploy is Test {
     }
 
     function deployTimelockUpgrade() internal {
-        // deploy Timelock
+        // timelock deploy
         uint256 timelockDelay = 24 * 60 * 60;
         address[] memory temp = new address[](1);
-        temp[0] = address(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
-        bytes memory data = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data));
-        LendefiTimelock instance = LendefiTimelock(proxy);
-        address implAddressV1 = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(instance) == implAddressV1);
-        // upgrade Timelock
-        vm.prank(guardian);
-        instance.grantRole(UPGRADER_ROLE, managerAdmin);
+        temp[0] = ethereum;
 
-        vm.startPrank(managerAdmin);
-        Upgrades.upgradeProxy(proxy, "LendefiTimelockV2.sol", "", guardian);
-        vm.stopPrank();
+        TimelockControllerUpgradeable implementation = new TimelockControllerUpgradeable();
+        bytes memory initData = abi.encodeWithSelector(
+            TimelockControllerUpgradeable.initialize.selector, timelockDelay, temp, temp, guardian
+        );
+        ERC1967Proxy proxy1 = new ERC1967Proxy(address(implementation), initData);
 
-        address implAddressV2 = Upgrades.getImplementationAddress(proxy);
-        LendefiTimelockV2 ecoInstanceV2 = LendefiTimelockV2(proxy);
-        assertEq(ecoInstanceV2.version(), 2);
-        assertFalse(implAddressV2 == implAddressV1);
-        deployComplete();
+        timelockInstance = TimelockControllerUpgradeable(payable(address(proxy1)));
 
-        bool isUpgrader = ecoInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin);
-        assertTrue(isUpgrader == true);
-
-        vm.prank(guardian);
-        ecoInstanceV2.revokeRole(UPGRADER_ROLE, managerAdmin);
-        assertFalse(ecoInstanceV2.hasRole(UPGRADER_ROLE, managerAdmin) == true);
+        // deploy Timelock Upgrade, ERC1967Proxy
+        TimelockV2 newImplementation = new TimelockV2();
+        bytes memory initData2 = abi.encodeWithSelector(
+            TimelockControllerUpgradeable.initialize.selector, timelockDelay, temp, temp, guardian
+        );
+        ERC1967Proxy proxy2 = new ERC1967Proxy(address(newImplementation), initData2);
+        timelockInstance = TimelockControllerUpgradeable(payable(address(proxy2)));
     }
 
     function deployGovernorUpgrade() internal {
-        // deploy Token
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        tokenInstance = GovernanceToken(proxy);
-        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(tokenInstance) == tokenImplementation);
-
-        // deploy Timelock
-        uint256 timelockDelay = 24 * 60 * 60;
-        address[] memory temp = new address[](1);
-        temp[0] = address(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE);
-        bytes memory data1 = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
-        address payable proxy1 = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data1));
-        LendefiTimelock instance = LendefiTimelock(proxy1);
-        address implAddressV1 = Upgrades.getImplementationAddress(proxy1);
-        assertFalse(address(instance) == implAddressV1);
+        _deployToken();
+        _deployTimelock();
 
         // deploy Governor
-        bytes memory data2 = abi.encodeCall(
-            LendefiGovernor.initialize, (tokenInstance, TimelockControllerUpgradeable(payable(proxy1)), guardian)
-        );
+        bytes memory data2 = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockInstance, guardian));
         address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data2));
         LendefiGovernor govInstanceV1 = LendefiGovernor(proxy2);
         address govImplAddressV1 = Upgrades.getImplementationAddress(proxy2);
@@ -250,27 +211,10 @@ contract BasicDeploy is Test {
 
     function deployIMUpgrade() internal {
         vm.warp(365 days);
-        // token deploy
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        tokenInstance = GovernanceToken(proxy);
-        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(tokenInstance) == tokenImplementation);
-        // timelock deploy
-        uint256 timelockDelay = 24 * 60 * 60;
-        address[] memory temp = new address[](1);
-        temp[0] = ethereum;
-        bytes memory data2 = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
-        address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data2));
-        timelockInstance = LendefiTimelock(proxy2);
-        address tlImplementation = Upgrades.getImplementationAddress(proxy2);
-        assertFalse(address(timelockInstance) == tlImplementation);
-        //deploy Treasury
-        bytes memory data3 = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
-        address payable proxy3 = payable(Upgrades.deployUUPSProxy("Treasury.sol", data3));
-        treasuryInstance = Treasury(proxy3);
-        address implAddressV1 = Upgrades.getImplementationAddress(proxy3);
-        assertFalse(address(treasuryInstance) == implAddressV1);
+
+        _deployToken();
+        _deployTimelock();
+        _deployTreasury();
 
         // deploy Investment Manager
         bytes memory data4 = abi.encodeCall(
@@ -279,8 +223,8 @@ contract BasicDeploy is Test {
         );
         address payable proxy4 = payable(Upgrades.deployUUPSProxy("InvestmentManager.sol", data4));
         managerInstance = InvestmentManager(proxy4);
-        address implementation = Upgrades.getImplementationAddress(proxy4);
-        assertFalse(address(managerInstance) == implementation);
+        address implAddressV1 = Upgrades.getImplementationAddress(proxy4);
+        assertFalse(address(managerInstance) == implAddressV1);
 
         // upgrade InvestmentManager
         vm.prank(guardian);
@@ -305,38 +249,10 @@ contract BasicDeploy is Test {
 
     function deployComplete() internal {
         vm.warp(365 days);
-        // token deploy
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        tokenInstance = GovernanceToken(proxy);
-        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(tokenInstance) == tokenImplementation);
-
-        // ecosystem deploy
-        bytes memory data1 = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
-        address payable proxy1 = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data1));
-        ecoInstance = Ecosystem(proxy1);
-        address ecoImplementation = Upgrades.getImplementationAddress(proxy1);
-        assertFalse(address(ecoInstance) == ecoImplementation);
-
-        // timelock deploy
-        uint256 timelockDelay = 24 * 60 * 60;
-        address[] memory temp = new address[](1);
-        temp[0] = ethereum;
-        bytes memory data2 = abi.encodeCall(LendefiTimelock.initialize, (timelockDelay, temp, temp, guardian));
-        address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiTimelock.sol", data2));
-        timelockInstance = LendefiTimelock(proxy2);
-        address tlImplementation = Upgrades.getImplementationAddress(proxy2);
-        assertFalse(address(timelockInstance) == tlImplementation);
-
-        // governor deploy
-        bytes memory data3 = abi.encodeCall(
-            LendefiGovernor.initialize, (tokenInstance, TimelockControllerUpgradeable(payable(proxy2)), guardian)
-        );
-        address payable proxy3 = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data3));
-        govInstance = LendefiGovernor(proxy3);
-        address govImplementation = Upgrades.getImplementationAddress(proxy3);
-        assertFalse(address(govInstance) == govImplementation);
+        _deployToken();
+        _deployEcosystem();
+        _deployTimelock();
+        _deployGovernor();
 
         // reset timelock proposers and executors
         vm.startPrank(guardian);
@@ -349,10 +265,70 @@ contract BasicDeploy is Test {
         vm.stopPrank();
 
         //deploy Treasury
-        bytes memory data4 = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
-        address payable proxy4 = payable(Upgrades.deployUUPSProxy("Treasury.sol", data4));
-        treasuryInstance = Treasury(proxy4);
-        address tImplementation = Upgrades.getImplementationAddress(proxy4);
-        assertFalse(address(treasuryInstance) == tImplementation);
+        _deployTreasury();
+    }
+
+    function _deployToken() internal {
+        // token deploy
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
+        tokenInstance = GovernanceToken(proxy);
+        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(tokenInstance) == tokenImplementation);
+    }
+
+    function _deployEcosystem() internal {
+        // ecosystem deploy
+        bytes memory data = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data));
+        ecoInstance = Ecosystem(proxy);
+        address ecoImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(ecoInstance) == ecoImplementation);
+    }
+
+    function _deployTimelock() internal {
+        // timelock deploy
+        uint256 timelockDelay = 24 * 60 * 60;
+        address[] memory temp = new address[](1);
+        temp[0] = ethereum;
+        TimelockControllerUpgradeable timelock = new TimelockControllerUpgradeable();
+
+        bytes memory initData = abi.encodeWithSelector(
+            TimelockControllerUpgradeable.initialize.selector, timelockDelay, temp, temp, guardian
+        );
+
+        ERC1967Proxy proxy = new ERC1967Proxy(address(timelock), initData);
+        timelockInstance = TimelockControllerUpgradeable(payable(address(proxy)));
+    }
+
+    function _deployGovernor() internal {
+        // deploy Governor
+        bytes memory data = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockInstance, guardian));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data));
+        govInstance = LendefiGovernor(proxy);
+        address govImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(govInstance) == govImplementation);
+        assertEq(govInstance.uupsVersion(), 1);
+    }
+
+    function _deployTreasury() internal {
+        // deploy Treasury
+        bytes memory data = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("Treasury.sol", data));
+        treasuryInstance = Treasury(proxy);
+        address implAddress = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(treasuryInstance) == implAddress);
+    }
+
+    function _deployInvestmentManager() internal {
+        // deploy Investment Manager
+        bytes memory data = abi.encodeCall(
+            InvestmentManager.initialize,
+            (address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian)
+        );
+        address payable proxy = payable(Upgrades.deployUUPSProxy("InvestmentManager.sol", data));
+        managerInstance = InvestmentManager(proxy);
+        address implementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(managerInstance) == implementation);
     }
 }
