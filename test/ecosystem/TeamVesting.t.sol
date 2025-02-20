@@ -1,23 +1,22 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import "../BasicDeploy.sol";
+import "../BasicDeploy.sol"; // solhint-disable-line
 import {TeamVesting} from "../../contracts/ecosystem/TeamVesting.sol";
 
 contract TeamVestingTest is BasicDeploy {
-    // Events
-    event ERC20Released(address indexed token, uint256 amount);
-    event AddPartner(address account, address vesting, uint256 amount);
-    event Cancelled(uint256 amount);
-
     // Constants
     uint64 public constant CLIFF_PERIOD = 365 days;
     uint64 public constant VESTING_DURATION = 730 days;
     uint256 public constant VESTING_AMOUNT = 200_000 ether;
-
     // State variables
     uint64 public startTimestamp;
     TeamVesting internal vestingContract;
+
+    // Events
+    event ERC20Released(address indexed token, uint256 amount);
+    event AddPartner(address account, address vesting, uint256 amount);
+    event Cancelled(uint256 amount);
 
     function setUp() public {
         // Deploy base contracts
