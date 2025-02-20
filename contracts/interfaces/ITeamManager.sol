@@ -2,8 +2,9 @@
 pragma solidity 0.8.23;
 /**
  * @title Team Manager Interface
- * @author Nebula Labs LLC
+ * @notice Interface for the Lendefi DAO Team Manager
  * @custom:security-contact security@nebula-labs.xyz
+ * @custom:copyright Copyright (c) 2025 Nebula Holding Inc. All rights reserved.
  */
 
 interface ITEAMMANAGER {
@@ -48,8 +49,10 @@ interface ITEAMMANAGER {
      * @dev Create and fund a vesting contract for a new team member
      * @param beneficiary beneficiary address
      * @param amount token amount
+     * @param cliff cliff period in seconds
+     * @param duration vesting duration in seconds after cliff  (e.g. 24 months)
      */
-    function addTeamMember(address beneficiary, uint256 amount) external;
+    function addTeamMember(address beneficiary, uint256 amount, uint256 cliff, uint256 duration) external;
 
     /**
      * @dev Getter for the UUPS version, incremented each time an upgrade occurs.
