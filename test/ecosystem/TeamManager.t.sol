@@ -6,12 +6,12 @@ import {TeamManager} from "../../contracts/ecosystem/TeamManager.sol";
 
 contract TeamManagerTest is BasicDeploy {
     uint256 internal vmprimer = 365 days;
-    TeamManager internal tmInstance;
 
     event EtherReleased(address indexed to, uint256 amount);
     event ERC20Released(address indexed token, address indexed to, uint256 amount);
 
     function setUp() public {
+        vm.warp(365 days);
         deployComplete();
         assertEq(tokenInstance.totalSupply(), 0);
         // this is the TGE
@@ -41,6 +41,76 @@ contract TeamManagerTest is BasicDeploy {
         (success,) = payable(address(tmInstance)).call{value: 100 ether}("");
     }
 
+    function testReceiveFunction() public {
+        // Test direct ETH transfer
+        vm.deal(alice, 1 ether);
+        vm.prank(alice);
+        (bool success,) = address(tmInstance).call{value: 1 ether}("");
+        assertFalse(success);
+
+        // Verify no ETH was transferred
+        assertEq(address(tmInstance).balance, 0);
+        assertEq(alice.balance, 1 ether);
+
+        // Test zero value transfer
+        vm.prank(alice);
+        (success,) = address(tmInstance).call{value: 0}("");
+        assertFalse(success);
+
+        // Test transfer with data
+        vm.prank(alice);
+        (success,) = address(tmInstance).call{value: 1 ether}("0x");
+        assertFalse(success);
+    }
+
+    function testReceiveFallback() public {
+        // Setup test accounts with ETH
+        vm.deal(alice, 2 ether);
+
+        vm.startPrank(alice);
+
+        // Test sending ETH with empty calldata (calls receive)
+        (bool success,) = address(tmInstance).call{value: 1 ether}("");
+        assertFalse(success);
+
+        // Test sending ETH with non-empty calldata (calls fallback)
+        (success,) = address(tmInstance).call{value: 1 ether}(hex"dead");
+        assertFalse(success);
+
+        // Test sending with no ETH but with data
+        (success,) = address(tmInstance).call(hex"dead");
+        assertFalse(success);
+
+        vm.stopPrank();
+
+        // Verify contract has no ETH
+        assertEq(address(tmInstance).balance, 0);
+    }
+
+    function testMultipleReceiveAttempts() public {
+        // Setup multiple accounts
+        address[] memory senders = new address[](3);
+        senders[0] = alice;
+        senders[1] = bob;
+        senders[2] = charlie;
+
+        // Give each account some ETH
+        for (uint256 i = 0; i < senders.length; i++) {
+            vm.deal(senders[i], 1 ether);
+
+            // Try to send ETH
+            vm.prank(senders[i]);
+            (bool success,) = address(tmInstance).call{value: 0.5 ether}("");
+            assertFalse(success);
+
+            // Verify balances remained unchanged
+            assertEq(address(senders[i]).balance, 1 ether);
+        }
+
+        // Verify contract has no ETH
+        assertEq(address(tmInstance).balance, 0);
+    }
+
     //Test: RevertInitialize
     function testRevertInitialize() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
@@ -62,13 +132,112 @@ contract TeamManagerTest is BasicDeploy {
         vm.stopPrank();
     }
 
+    function testPauseUnpauseAccess() public {
+        // Verify initial state
+        assertFalse(tmInstance.paused());
+
+        // Should revert when non-pauser tries to pause
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, PAUSER_ROLE)
+        );
+        tmInstance.pause();
+
+        // Grant PAUSER_ROLE to pauser
+        vm.prank(guardian);
+        tmInstance.grantRole(PAUSER_ROLE, pauser);
+
+        // Pauser should be able to pause
+        vm.prank(pauser);
+        tmInstance.pause();
+        assertTrue(tmInstance.paused());
+
+        // Should revert when trying to pause twice
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.prank(pauser);
+        vm.expectRevert(expError);
+        tmInstance.pause();
+
+        // Should revert when non-pauser tries to unpause
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, PAUSER_ROLE)
+        );
+        tmInstance.unpause();
+
+        // Pauser should be able to unpause
+        vm.prank(pauser);
+        tmInstance.unpause();
+        assertFalse(tmInstance.paused());
+
+        // Should revert when trying to unpause again
+        vm.prank(pauser);
+        vm.expectRevert(abi.encodeWithSignature("ExpectedPause()"));
+        tmInstance.unpause();
+    }
+
+    function testPauseBlocksOperations() public {
+        // Grant roles
+        vm.startPrank(guardian);
+        tmInstance.grantRole(PAUSER_ROLE, pauser);
+        tmInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
+        vm.stopPrank();
+
+        // Pause the contract
+        vm.prank(pauser);
+        tmInstance.pause();
+        assertTrue(tmInstance.paused());
+
+        // Try to add team member while paused
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(expError);
+        tmInstance.addTeamMember(alice, 100 ether, 365 days, 730 days);
+
+        // Unpause and verify operations resume
+        vm.prank(pauser);
+        tmInstance.unpause();
+        assertFalse(tmInstance.paused());
+
+        // Setup treasury release
+        // vm.roll(block.timestamp + 365 days);
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(tmInstance), 100 ether);
+
+        // Should now be able to add team member
+        tmInstance.addTeamMember(alice, 100 ether, 365 days, 730 days);
+        vm.stopPrank();
+
+        // Verify allocation was successful
+        assertEq(tmInstance.allocations(alice), 100 ether);
+    }
+
+    function testPauserRoleManagement() public {
+        // Should revert when non-admin tries to grant PAUSER_ROLE
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, DEFAULT_ADMIN_ROLE)
+        );
+        tmInstance.grantRole(PAUSER_ROLE, bob);
+
+        // Admin should be able to grant PAUSER_ROLE
+        vm.prank(guardian);
+        tmInstance.grantRole(PAUSER_ROLE, alice);
+        assertTrue(tmInstance.hasRole(PAUSER_ROLE, alice));
+
+        // Admin should be able to revoke PAUSER_ROLE
+        vm.prank(guardian);
+        tmInstance.revokeRole(PAUSER_ROLE, alice);
+        assertFalse(tmInstance.hasRole(PAUSER_ROLE, alice));
+    }
+
     //Test: RevertAddTeamMemberBranch2
     function testRevertAddTeamMemberBranch1() public {
         bytes memory expError =
             abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", guardian, MANAGER_ROLE);
         vm.prank(guardian);
         vm.expectRevert(expError); // access control violation
-        tmInstance.addTeamMember(managerAdmin, 100 ether);
+        tmInstance.addTeamMember(managerAdmin, 100 ether, 365 days, 730 days);
     }
 
     //Test: RevertAddTeamMemberBranch2
@@ -83,7 +252,7 @@ contract TeamManagerTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
         vm.prank(address(timelockInstance));
         vm.expectRevert(expError); // contract paused
-        tmInstance.addTeamMember(managerAdmin, 100 ether);
+        tmInstance.addTeamMember(managerAdmin, 100 ether, 365 days, 730 days);
     }
 
     // Test: RevertAddTeamMemberBranch3
@@ -91,10 +260,10 @@ contract TeamManagerTest is BasicDeploy {
         vm.prank(address(timelockInstance));
         bytes memory expError = abi.encodeWithSignature("CustomError(string)", "SUPPLY_LIMIT");
         vm.expectRevert(expError);
-        tmInstance.addTeamMember(managerAdmin, 10_000_000 ether);
+        tmInstance.addTeamMember(managerAdmin, 10_000_000 ether, 365 days, 730 days);
     }
 
-    // Test: AddTeamMember
+    // Test: AddTeamMember Success
     function testAddTeamMember() public {
         // execute a DAO proposal adding team member
         // get some tokens to vote with
@@ -126,7 +295,9 @@ contract TeamManagerTest is BasicDeploy {
         bytes memory callData1 = abi.encodeWithSignature(
             "release(address,address,uint256)", address(tokenInstance), address(tmInstance), 500_000 ether
         );
-        bytes memory callData2 = abi.encodeWithSignature("addTeamMember(address,uint256)", managerAdmin, 500_000 ether);
+        bytes memory callData2 = abi.encodeWithSignature(
+            "addTeamMember(address,uint256,uint256,uint256)", managerAdmin, 500_000 ether, 365 days, 730 days
+        );
         address[] memory to = new address[](2);
         to[0] = address(treasuryInstance);
         to[1] = address(tmInstance);
@@ -176,5 +347,51 @@ contract TeamManagerTest is BasicDeploy {
         address vestingContract = tmInstance.vestingContracts(managerAdmin);
         assertEq(tokenInstance.balanceOf(vestingContract), 500_000 ether);
         assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 28_000_000 ether - 500_000 ether);
+    }
+
+    function testAddTeamMemberValidations() public {
+        // Setup roles
+        vm.startPrank(guardian);
+        tmInstance.grantRole(PAUSER_ROLE, pauser);
+        tmInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
+        vm.stopPrank();
+
+        // Test invalid cliff period
+        vm.startPrank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "INVALID_CLIFF"));
+        tmInstance.addTeamMember(alice, 100 ether, 30 days, 730 days); // Too short cliff
+
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "INVALID_CLIFF"));
+        tmInstance.addTeamMember(alice, 100 ether, 400 days, 730 days); // Too long cliff
+
+        // Test invalid duration period
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "INVALID_DURATION"));
+        tmInstance.addTeamMember(alice, 100 ether, 180 days, 180 days); // Too short duration
+
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "INVALID_DURATION"));
+        tmInstance.addTeamMember(alice, 100 ether, 180 days, 1500 days); // Too long duration
+
+        // Test zero address beneficiary
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "INVALID_BENEFICIARY"));
+        tmInstance.addTeamMember(address(0), 100 ether, 180 days, 730 days);
+        vm.stopPrank();
+    }
+
+    function testPreventDoubleAllocation() public {
+        // Setup roles and initial allocation
+        vm.prank(guardian);
+        tmInstance.grantRole(MANAGER_ROLE, address(timelockInstance));
+
+        // Setup treasury release
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(tmInstance), 200 ether);
+
+        // First allocation should succeed
+        tmInstance.addTeamMember(alice, 100 ether, 180 days, 730 days);
+
+        // Second allocation to same beneficiary should fail
+        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ALREADY_ADDED"));
+        tmInstance.addTeamMember(alice, 100 ether, 180 days, 730 days);
+        vm.stopPrank();
     }
 }
