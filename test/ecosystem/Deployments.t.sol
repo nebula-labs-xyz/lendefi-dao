@@ -60,4 +60,14 @@ contract BasicDeployTest is BasicDeploy {
         assertEq(treasuryBal, 28_000_000 ether);
         assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
     }
+
+    function test_010_deployTeamManager() public {
+        deployComplete();
+
+        _deployTeamManager();
+    }
+
+    function test_011_deployTeamManagerUpgrade() public {
+        deployTeamManagerUpgrade();
+    }
 }
