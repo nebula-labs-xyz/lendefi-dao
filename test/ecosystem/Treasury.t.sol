@@ -2,6 +2,7 @@
 pragma solidity ^0.8.23;
 
 import "../BasicDeploy.sol"; // solhint-disable-line
+import {USDC} from "../../contracts/mock/USDC.sol";
 
 contract TreasuryTest is BasicDeploy {
     address public owner = guardian;
@@ -16,6 +17,7 @@ contract TreasuryTest is BasicDeploy {
     event ERC20Released(address indexed token, address indexed to, uint256 amount);
     event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
     event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+    event Received(address indexed src, uint256 amount);
 
     receive() external payable {
         if (msg.sender == address(treasuryInstance)) {
@@ -48,7 +50,99 @@ contract TreasuryTest is BasicDeploy {
         treasuryInstance.initialize(guardian, address(timelockInstance));
     }
 
+    // ============ Initialization Tests ============
+    // Test: InitializeSuccess
+    function testInitializeSuccess() public {
+        assertEq(treasuryInstance.hasRole(DEFAULT_ADMIN_ROLE, guardian), true);
+        assertEq(treasuryInstance.hasRole(PAUSER_ROLE, pauser), true);
+        assertEq(treasuryInstance.hasRole(MANAGER_ROLE, address(timelockInstance)), true);
+        assertEq(treasuryInstance.start(), block.timestamp - 180 days);
+        assertEq(treasuryInstance.duration(), 1095 days);
+        assertEq(treasuryInstance.version(), 1);
+    }
+
+    // Test: RevertInitializeTwice
+    function testRevertInitializeTwice() public {
+        vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
+        treasuryInstance.initialize(guardian, address(timelockInstance));
+    }
+
+    // ============ Start Tests ============
+
+    // Test: StartTimeInitialization
+    function testStartTimeInitialization() public {
+        assertEq(
+            treasuryInstance.start(), block.timestamp - 180 days, "Start time should be 180 days before current time"
+        );
+    }
+
+    // Test: StartTimeImmutability
+    function testStartTimeImmutability() public {
+        uint256 initialStart = treasuryInstance.start();
+
+        // Warp time forward
+        vm.warp(block.timestamp + 365 days);
+
+        assertEq(treasuryInstance.start(), initialStart, "Start time should not change after initialization");
+    }
+
+    // ============ Receive Tests ============
+
+    // Test: ReceiveETH
+    function testReceiveETH() public {
+        uint256 amount = 1 ether;
+        uint256 initialBalance = address(treasuryInstance).balance;
+
+        vm.expectEmit(true, true, true, true);
+        emit Received(address(this), amount);
+
+        // Send ETH to contract
+        (bool success,) = address(treasuryInstance).call{value: amount}("");
+        assertTrue(success, "ETH transfer should succeed");
+
+        assertEq(address(treasuryInstance).balance, initialBalance + amount, "Treasury balance should increase");
+    }
+
+    // Test: ReceiveZeroETH
+    function testReceiveZeroETH() public {
+        uint256 initialBalance = address(treasuryInstance).balance;
+
+        vm.expectEmit(true, true, true, true);
+        emit Received(address(this), 0);
+
+        // Send 0 ETH to contract
+        (bool success,) = address(treasuryInstance).call{value: 0}("");
+        assertTrue(success, "Zero ETH transfer should succeed");
+
+        assertEq(address(treasuryInstance).balance, initialBalance, "Treasury balance should remain unchanged");
+    }
+
+    // Test: ReceiveMultipleETH
+    function testReceiveMultipleETH() public {
+        uint256 initialBalance = address(treasuryInstance).balance;
+        uint256[] memory amounts = new uint256[](3);
+        amounts[0] = 0.5 ether;
+        amounts[1] = 1 ether;
+        amounts[2] = 1.5 ether;
+
+        uint256 totalSent = 0;
+        for (uint256 i = 0; i < amounts.length; i++) {
+            vm.expectEmit(true, true, true, true);
+            emit Received(address(this), amounts[i]);
+
+            (bool success,) = address(treasuryInstance).call{value: amounts[i]}("");
+            assertTrue(success, "ETH transfer should succeed");
+            totalSent += amounts[i];
+        }
+
+        assertEq(
+            address(treasuryInstance).balance,
+            initialBalance + totalSent,
+            "Treasury balance should reflect all transfers"
+        );
+    }
     // Test: Only Pauser Can Pause
+
     function testOnlyPauserCanPause() public {
         assertEq(treasuryInstance.paused(), false);
         vm.startPrank(pauser);
@@ -102,7 +196,27 @@ contract TreasuryTest is BasicDeploy {
         treasuryInstance.release(assetRecipient, 10 ether);
     }
 
+    // Test: Cannot Release ERC20 When Paused
+    function testCannotReleaseERC20WhenPaused() public {
+        // Move to a time when tokens are vested
+        _moveToVestingTime(50);
+
+        // Get releasable amount
+        uint256 releasableAmount = treasuryInstance.releasable(address(tokenInstance));
+        assertTrue(releasableAmount > 0, "Should have releasable tokens");
+
+        // Pause the contract
+        vm.prank(pauser);
+        treasuryInstance.pause();
+        assertTrue(treasuryInstance.paused(), "Contract should be paused");
+
+        // Try to release tokens while paused
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
+        treasuryInstance.release(address(tokenInstance), beneficiary, releasableAmount);
+    }
     // Test: Only Manager Can Release Tokens
+
     function testOnlyManagerCanRelease() public {
         vm.warp(block.timestamp + 548 days); // half-vested
         uint256 vested = treasuryInstance.releasable(address(tokenInstance));
@@ -113,6 +227,143 @@ contract TreasuryTest is BasicDeploy {
         vm.prank(guardian);
         vm.expectRevert(expError); // access control violation
         treasuryInstance.release(address(tokenInstance), beneficiary, vested);
+    }
+
+    // ============ Released Tests ============
+
+    // Test: ReleasedETH
+    // Test: ReleasedETH
+    function testReleasedETH() public {
+        // Check initial state
+        assertEq(treasuryInstance.released(), 0, "Initial released ETH should be 0");
+
+        // Move to 50% vesting time
+        _moveToVestingTime(50);
+
+        // Get releasable amount
+        uint256 releasableAmount = treasuryInstance.releasable();
+        assertTrue(releasableAmount > 0, "Should have releasable ETH");
+
+        // Release ETH using timelock
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(beneficiary, releasableAmount);
+
+        // Verify released amount
+        assertEq(treasuryInstance.released(), releasableAmount, "Released ETH should match releasable amount");
+    }
+
+    // Test: ReleasedERC20
+    function testReleasedERC20() public {
+        // Check initial state
+        assertEq(treasuryInstance.released(address(tokenInstance)), 0, "Initial released tokens should be 0");
+
+        // Move to 50% vesting time
+        _moveToVestingTime(50);
+
+        // Get releasable amount
+        uint256 releasableAmount = treasuryInstance.releasable(address(tokenInstance));
+        assertTrue(releasableAmount > 0, "Should have releasable tokens");
+
+        // Release tokens using timelock
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), beneficiary, releasableAmount);
+
+        // Verify released amount
+        assertEq(
+            treasuryInstance.released(address(tokenInstance)),
+            releasableAmount,
+            "Released tokens should match releasable amount"
+        );
+    }
+
+    // Test: ReleasedETHBeforeAnyRelease
+    function testReleasedETHBeforeAnyRelease() public {
+        assertEq(treasuryInstance.released(), 0, "Initial ETH release should be 0");
+    }
+
+    // Test: ReleasedTokenBeforeAnyRelease
+    function testReleasedTokenBeforeAnyRelease() public {
+        assertEq(treasuryInstance.released(address(tokenInstance)), 0, "Initial token release should be 0");
+    }
+
+    // Test: ReleasedTokenZeroAddress
+    function testReleasedTokenZeroAddress() public {
+        assertEq(treasuryInstance.released(address(0)), 0, "Zero address token release should be 0");
+    }
+    // ============ Releasable Tests ============
+    // Test: ReleasableETHBeforeStart
+
+    function testReleasableETHBeforeStart() public {
+        vm.warp(startTime - 1 days);
+        assertEq(treasuryInstance.releasable(), 0, "Nothing should be releasable before start");
+    }
+
+    // Test: ReleasableTokenBeforeStart
+    function testReleasableTokenBeforeStart() public {
+        vm.warp(startTime - 1 days);
+        assertEq(treasuryInstance.releasable(address(tokenInstance)), 0, "Nothing should be releasable before start");
+    }
+
+    // Test: ReleasableAfterFullVesting
+    function testReleasableAfterFullVesting() public {
+        _moveToVestingTime(100);
+        assertEq(treasuryInstance.releasable(), vestingAmount, "All ETH should be releasable");
+        assertEq(
+            treasuryInstance.releasable(address(tokenInstance)),
+            tokenInstance.balanceOf(address(treasuryInstance)),
+            "All tokens should be releasable"
+        );
+    }
+
+    // Test: ReleasableZeroBalance
+    function testReleasableZeroBalance() public {
+        _moveToVestingTime(50);
+
+        // Deploy new USDC instance for zero balance test
+        USDC newUsdc = new USDC();
+
+        // Check releasable for token with zero balance
+        uint256 releasable = treasuryInstance.releasable(address(newUsdc));
+
+        assertEq(releasable, 0, "Should be 0 for token with no balance");
+        assertEq(newUsdc.balanceOf(address(treasuryInstance)), 0, "Treasury should have no balance");
+    }
+
+    // Test: ReleasableWithBalance
+    function testReleasableWithBalance() public {
+        // Deploy and mint USDC
+        USDC newUsdc = new USDC();
+        newUsdc.mint(address(treasuryInstance), INIT_BALANCE_USDC);
+        _moveToVestingTime(50);
+
+        uint256 elapsed = block.timestamp - treasuryInstance.start();
+        uint256 expectedVested = (INIT_BALANCE_USDC * elapsed) / totalDuration;
+        uint256 releasable = treasuryInstance.releasable(address(newUsdc));
+
+        assertEq(releasable, expectedVested, "Incorrect releasable amount");
+    }
+
+    // Test: ReleasableETH
+    function testReleasableETH() public {
+        _moveToVestingTime(50); // Move to 50% vesting time
+
+        uint256 vested = treasuryInstance.releasable();
+        uint256 elapsed = block.timestamp - treasuryInstance.start();
+        uint256 expectedVested = (vestingAmount * elapsed) / totalDuration;
+
+        assertEq(vested, expectedVested, "Incorrect releasable ETH amount");
+    }
+
+    // Test: ReleasableERC20
+    function testReleasableERC20() public {
+        _moveToVestingTime(50); // Move to 50% vesting time
+
+        uint256 totalBalance = tokenInstance.balanceOf(address(treasuryInstance));
+        uint256 elapsed = block.timestamp - treasuryInstance.start();
+        uint256 expectedVested = (totalBalance * elapsed) / totalDuration;
+        uint256 vested = treasuryInstance.releasable(address(tokenInstance));
+
+        assertEq(vested, expectedVested, "Incorrect releasable token amount");
     }
 
     // Fuzz Test: Releasing Tokens with Randomized Timing
@@ -275,7 +526,43 @@ contract TreasuryTest is BasicDeploy {
         treasuryInstance.release(address(tokenInstance), assetRecipient, vested + 1 ether);
     }
 
+    // Test: RevertReleaseTokensZeroToken
+    function testRevertReleaseTokensZeroToken() public {
+        _moveToVestingTime(50);
+        uint256 amount = 100 ether;
+
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS");
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(expError);
+        treasuryInstance.release(address(tokenInstance), address(0), amount);
+    }
+
+    // Test: ERC20Released
+    function testERC20Released() public {
+        // Test initial state
+        assertEq(treasuryInstance.released(address(tokenInstance)), 0, "Initial released amount should be 0");
+
+        // Move to 50% vesting time and release tokens
+        _moveToVestingTime(50);
+        uint256 releaseAmount = treasuryInstance.releasable(address(tokenInstance));
+
+        vm.prank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), beneficiary, releaseAmount);
+
+        // Verify erc20Released matches released(address)
+        assertEq(
+            tokenInstance.balanceOf(beneficiary),
+            treasuryInstance.released(address(tokenInstance)),
+            "erc20Released should match released(address)"
+        );
+        assertEq(
+            treasuryInstance.released(address(tokenInstance)),
+            releaseAmount,
+            "erc20Released should return correct amount"
+        );
+    }
     // Additional test cases
+
     function testRoleManagement() public {
         address newManager = address(0xABC);
 
