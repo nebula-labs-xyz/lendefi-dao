@@ -5,6 +5,7 @@ pragma solidity 0.8.23;
  * @title Investment Manager Interface
  * @notice Defines the interface for managing investment rounds and token distribution
  * @dev Implements events and data structures for investment lifecycle management
+ * @custom:copyright Copyright (c) 2025 Nebula Holding Inc. All rights reserved.
  */
 interface IINVMANAGER {
     /**
