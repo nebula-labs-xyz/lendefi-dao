@@ -2299,25 +2299,6 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(address(treasuryInstance).balance, ethTarget);
     }
 
-    // function testRemoveInvestorAllocation() public {
-    //     uint32 roundId = _setupActiveRound();
-
-    //     vm.startPrank(guardian);
-    //     manager.addInvestorAllocation(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
-
-    //     // Expect InvestorAllocationRemoved event with correct parameters
-    //     vm.expectEmit(true, true, false, true);
-    //     emit InvestorAllocationRemoved(roundId, alice, INVESTMENT_AMOUNT, TOKEN_ALLOCATION);
-
-    //     manager.removeInvestorAllocation(roundId, alice);
-    //     vm.stopPrank();
-
-    //     // Verify allocation was removed
-    //     (uint256 allocEth, uint256 allocToken,,) = manager.getInvestorDetails(roundId, alice);
-    //     assertEq(allocEth, 0, "ETH allocation should be zero");
-    //     assertEq(allocToken, 0, "Token allocation should be zero");
-    // }
-
     function testRemoveInvestorAllocationRevertsForZeroAddress() public {
         uint32 roundId = _setupActiveRound();
 
@@ -2539,6 +2520,7 @@ contract InvestmentManagerTest is BasicDeploy {
 
         vm.expectRevert("ZERO_ADDRESS_DETECTED");
         ERC1967Proxy proxy = new ERC1967Proxy(address(item), data);
+        InvestmentManager(payable(address(proxy)));
 
         // Test: valid token, valid timelock, zero treasury, valid guardian
         data = abi.encodeCall(
@@ -2546,6 +2528,7 @@ contract InvestmentManagerTest is BasicDeploy {
         );
         vm.expectRevert("ZERO_ADDRESS_DETECTED");
         ERC1967Proxy proxy1 = new ERC1967Proxy(address(item), data);
+        InvestmentManager(payable(address(proxy1)));
 
         // Test: valid token, valid timelock, valid treasury, zero guardian
         data = abi.encodeCall(
@@ -2553,6 +2536,7 @@ contract InvestmentManagerTest is BasicDeploy {
         );
         vm.expectRevert("ZERO_ADDRESS_DETECTED");
         ERC1967Proxy proxy2 = new ERC1967Proxy(address(item), data);
+        InvestmentManager(payable(address(proxy2)));
     }
 
     function testActivateRoundInvalidStatus() public {
