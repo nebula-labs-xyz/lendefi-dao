@@ -658,7 +658,6 @@ contract InvestmentManager is
         nonReentrant
     {
         Round storage currentRound = rounds[roundId];
-        // require(currentRound.status == RoundStatus.ACTIVE, "ROUND_NOT_ACTIVE");
         require(block.timestamp < currentRound.endTime, "ROUND_ENDED");
         require(currentRound.participants < MAX_INVESTORS_PER_ROUND, "ROUND_OVERSUBSCRIBED");
 
