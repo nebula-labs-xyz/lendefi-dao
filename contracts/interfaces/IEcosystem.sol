@@ -51,6 +51,14 @@ interface IECOSYSTEM {
     event AddPartner(address indexed account, address indexed vesting, uint256 amount);
 
     /**
+     * @dev Emitted when the maximum reward amount is updated.
+     * @param manager The address of the manager who updated the value.
+     * @param oldMaxReward The previous maximum reward amount.
+     * @param newMaxReward The new maximum reward amount.
+     */
+    event MaxRewardUpdated(address indexed manager, uint256 oldMaxReward, uint256 newMaxReward);
+
+    /**
      * @dev Custom Error.
      * @param msg error desription
      */
@@ -98,6 +106,14 @@ interface IECOSYSTEM {
      * Emits a {AddPartner} event.
      */
     function addPartner(address account, uint256 amount, uint256 cliff, uint256 duration) external;
+
+    /**
+     * @dev Updates the maximum one-time reward amount.
+     * @param newMaxReward The new maximum reward amount.
+     * Emits a {MaxRewardUpdated} event.
+     */
+    function updateMaxReward(uint256 newMaxReward) external;
+
     /**
      * @dev Getter for the starting reward supply.
      * @return starting reward supply
@@ -109,6 +125,12 @@ interface IECOSYSTEM {
      * @return maximal one time reward amount
      */
     function maxReward() external view returns (uint256);
+
+    /**
+     * @dev Getter for the max one time burn amount.
+     * @return maximal one time burn amount
+     */
+    function maxBurn() external view returns (uint256);
 
     /**
      * @dev Getter for the starting airdrop supply.
