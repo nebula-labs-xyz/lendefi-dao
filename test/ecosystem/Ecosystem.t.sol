@@ -11,6 +11,7 @@ contract EcosystemTest is BasicDeploy {
     event Reward(address indexed src, address indexed to, uint256 amount);
     event AirDrop(address[] addresses, uint256 amount);
     event AddPartner(address indexed account, address indexed vesting, uint256 amount);
+    event MaxRewardUpdated(address indexed manager, uint256 oldMaxReward, uint256 newMaxReward);
 
     function setUp() public {
         deployComplete();
@@ -591,15 +592,6 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.addPartner(partner, _amount, 365 days, 730 days);
     }
 
-    // function testFuzz_RevertInvalidCliff(uint64 _cliff, uint64 _duration) public {
-    //     vm.assume(_cliff >= _duration && _duration != 0);
-
-    //     bytes memory expError = abi.encodeWithSignature("InvalidVestingSchedule()");
-    //     vm.prank(managerAdmin);
-    //     vm.expectRevert(expError);
-    //     ecoInstance.addPartner(partner, 100 ether, _cliff, _duration);
-    // }
-
     function testFuzz_RevertExceedSupply(uint256 _amount) public {
         uint256 partnershipSupply = ecoInstance.partnershipSupply();
         _amount = bound(_amount, partnershipSupply + 1, type(uint256).max);
@@ -661,5 +653,88 @@ contract EcosystemTest is BasicDeploy {
 
         vm.warp(block.timestamp + _cliff + _duration);
         assertEq(vesting.releasable(address(tokenInstance)), 100 ether);
+    }
+
+    function testUpdateMaxReward() public {
+        uint256 oldMaxReward = ecoInstance.maxReward();
+        uint256 newMaxReward = oldMaxReward / 2; // Reduce to half
+
+        vm.prank(managerAdmin);
+        vm.expectEmit(address(ecoInstance));
+        emit MaxRewardUpdated(managerAdmin, oldMaxReward, newMaxReward);
+        ecoInstance.updateMaxReward(newMaxReward);
+
+        assertEq(ecoInstance.maxReward(), newMaxReward, "Max reward should be updated");
+    }
+
+    function testRevertUpdateMaxRewardUnauthorized() public {
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, MANAGER_ROLE);
+
+        vm.prank(alice);
+        vm.expectRevert(expError);
+        ecoInstance.updateMaxReward(1 ether);
+    }
+
+    function testRevertUpdateMaxRewardWhenPaused() public {
+        vm.prank(pauser);
+        ecoInstance.pause();
+
+        bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
+
+        vm.prank(managerAdmin);
+        vm.expectRevert(expError);
+        ecoInstance.updateMaxReward(1 ether);
+    }
+
+    function testRevertUpdateMaxRewardZero() public {
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
+
+        vm.prank(managerAdmin);
+        vm.expectRevert(expError);
+        ecoInstance.updateMaxReward(0);
+    }
+
+    function testRevertUpdateMaxRewardExcessive() public {
+        uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
+        uint256 excessiveAmount = (remainingRewards / 20) + 1 ether; // Just over 5%
+
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "EXCESSIVE_MAX_REWARD");
+
+        vm.prank(managerAdmin);
+        vm.expectRevert(expError);
+        ecoInstance.updateMaxReward(excessiveAmount);
+    }
+
+    function testFuzz_UpdateMaxReward(uint256 _newMaxReward) public {
+        uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
+        uint256 maxAllowed = remainingRewards / 20; // 5% of remaining rewards
+
+        // Bound the input to be between 1 and the maximum allowed
+        _newMaxReward = bound(_newMaxReward, 1, maxAllowed);
+
+        vm.prank(managerAdmin);
+        ecoInstance.updateMaxReward(_newMaxReward);
+
+        assertEq(ecoInstance.maxReward(), _newMaxReward, "Max reward should be updated correctly");
+    }
+
+    function testFuzz_RevertUpdateMaxRewardExcessive(uint256 _excessAmount) public {
+        // Make sure _excessAmount is positive but not too large
+        _excessAmount = bound(_excessAmount, 1, type(uint128).max);
+
+        uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
+        uint256 maxAllowed = remainingRewards / 20; // 5% of remaining rewards
+
+        // Prevent overflow by ensuring we can safely add these values
+        vm.assume(maxAllowed <= type(uint256).max - _excessAmount);
+
+        uint256 excessiveAmount = maxAllowed + _excessAmount;
+
+        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "EXCESSIVE_MAX_REWARD");
+
+        vm.prank(managerAdmin);
+        vm.expectRevert(expError);
+        ecoInstance.updateMaxReward(excessiveAmount);
     }
 }
