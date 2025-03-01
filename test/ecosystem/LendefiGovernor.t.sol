@@ -15,8 +15,8 @@ contract LendefiGovernorTest is BasicDeploy {
     function setUp() public {
         vm.warp(365 days);
         deployToken();
-        deployEcosystem();
         deployTimelock();
+        deployEcosystem();
         deployGovernor();
         setupTimelockRoles();
         deployTreasury();
@@ -584,7 +584,8 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     function deployEcosystem() internal {
-        bytes memory data = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
+        bytes memory data =
+            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, pauser));
         address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data));
         ecoInstance = Ecosystem(proxy);
         address ecoImplementation = Upgrades.getImplementationAddress(proxy);
