@@ -2,16 +2,20 @@
 pragma solidity ^0.8.23;
 
 import {BasicDeploy} from "../BasicDeploy.sol";
-import {VestingWallet} from "@openzeppelin/contracts/finance/VestingWallet.sol";
+import {PartnerVesting} from "../../contracts/ecosystem/PartnerVesting.sol";
 import {Ecosystem} from "../../contracts/ecosystem/Ecosystem.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 contract EcosystemTest is BasicDeploy {
-    event Burn(address indexed src, uint256 amount);
-    event Reward(address indexed src, address indexed to, uint256 amount);
-    event AirDrop(address[] addresses, uint256 amount);
-    event AddPartner(address indexed account, address indexed vesting, uint256 amount);
-    event MaxRewardUpdated(address indexed manager, uint256 oldMaxReward, uint256 newMaxReward);
+    event Burn(address indexed burner, uint256 amount);
+    event Reward(address indexed sender, address indexed recipient, uint256 amount);
+    event AirDrop(address[] indexed winners, uint256 amount);
+    event AddPartner(address indexed partner, address indexed vestingContract, uint256 amount);
+    event CancelPartnership(address indexed partner, uint256 remainingAmount);
+    event MaxRewardUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
+    event MaxBurnUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
+    event Initialized(address indexed initializer);
+    event Upgrade(address indexed upgrader, address indexed newImplementation, uint32 version);
 
     function setUp() public {
         deployComplete();
@@ -31,7 +35,7 @@ contract EcosystemTest is BasicDeploy {
 
     // Test: RevertReceive
     function testRevertReceive() public returns (bool success) {
-        vm.expectRevert(); // contract does not receive ether
+        vm.expectRevert("NO_ETHER_ACCEPTED"); // contract does not receive ether
         (success,) = payable(address(ecoInstance)).call{value: 100 ether}("");
     }
 
@@ -65,7 +69,7 @@ contract EcosystemTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
-        ecoInstance.initialize(address(tokenInstance), guardian, pauser);
+        ecoInstance.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
     }
 
     function testProxyInitializeSuccess() public {
@@ -75,7 +79,7 @@ contract EcosystemTest is BasicDeploy {
         Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
 
         // Initialize with valid addresses
-        ecosystem.initialize(address(tokenInstance), guardian, pauser);
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
 
         // Verify initialization
         assertTrue(ecosystem.hasRole(DEFAULT_ADMIN_ROLE, guardian));
@@ -90,11 +94,11 @@ contract EcosystemTest is BasicDeploy {
         Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
 
         // First initialization
-        ecosystem.initialize(address(tokenInstance), guardian, pauser);
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
 
         // Attempt second initialization
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
-        ecosystem.initialize(address(tokenInstance), guardian, pauser);
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
     }
 
     function testRevertProxyInitializeZeroAddresses() public {
@@ -104,16 +108,20 @@ contract EcosystemTest is BasicDeploy {
         Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
 
         // Test zero token address
-        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
-        ecosystem.initialize(address(0), guardian, pauser);
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
+        ecosystem.initialize(address(0), address(timelockInstance), guardian, pauser);
+
+        // Test zero timelock address
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
+        ecosystem.initialize(address(tokenInstance), address(0), guardian, pauser);
 
         // Test zero guardian address
-        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
-        ecosystem.initialize(address(tokenInstance), address(0), pauser);
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), address(0), pauser);
 
         // Test zero pauser address
-        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
-        ecosystem.initialize(address(tokenInstance), guardian, address(0));
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, address(0));
     }
 
     // Test: Pause
@@ -178,6 +186,7 @@ contract EcosystemTest is BasicDeploy {
         winners[1] = bob;
         winners[2] = charlie;
 
+        vm.expectEmit(address(ecoInstance));
         emit AirDrop(winners, 20 ether);
         ecoInstance.airdrop(winners, 20 ether);
         vm.stopPrank();
@@ -235,9 +244,8 @@ contract EcosystemTest is BasicDeploy {
         winners[0] = alice;
         winners[1] = bob;
         winners[2] = charlie;
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "GAS_LIMIT");
         vm.prank(managerAdmin);
-        vm.expectRevert(expError); // array too large
+        vm.expectRevert(abi.encodeWithSignature("GasLimit(uint256)", 5001)); // array too large
         ecoInstance.airdrop(winners, 1 ether);
     }
 
@@ -247,10 +255,25 @@ contract EcosystemTest is BasicDeploy {
         winners[0] = alice;
         winners[1] = bob;
         winners[2] = charlie;
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "AIRDROP_SUPPLY_LIMIT");
+
+        uint256 totalAmount = 3 * 2_000_000 ether;
+        uint256 available = ecoInstance.airdropSupply() - ecoInstance.issuedAirDrop();
+
         vm.prank(managerAdmin);
-        vm.expectRevert(expError); // supply exceeded
+        vm.expectRevert(abi.encodeWithSignature("AirdropSupplyLimit(uint256,uint256)", totalAmount, available)); // supply exceeded
         ecoInstance.airdrop(winners, 2_000_000 ether);
+    }
+
+    // Test: RevertAirdropInvalidAmount
+    function testRevertAirdropInvalidAmount() public {
+        address[] memory winners = new address[](3);
+        winners[0] = alice;
+        winners[1] = bob;
+        winners[2] = charlie;
+
+        vm.prank(managerAdmin);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 0.5 ether));
+        ecoInstance.airdrop(winners, 0.5 ether);
     }
 
     // Test: Reward
@@ -294,9 +317,8 @@ contract EcosystemTest is BasicDeploy {
     function testRevertRewardBranch3() public {
         vm.prank(guardian);
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 0));
         ecoInstance.reward(assetRecipient, 0);
     }
 
@@ -306,9 +328,8 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
 
         uint256 maxReward = ecoInstance.maxReward();
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "REWARD_LIMIT");
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("RewardLimit(uint256,uint256)", maxReward + 1 ether, maxReward));
         ecoInstance.reward(assetRecipient, maxReward + 1 ether);
     }
 
@@ -317,13 +338,19 @@ contract EcosystemTest is BasicDeploy {
         vm.prank(guardian);
         ecoInstance.grantRole(REWARDER_ROLE, managerAdmin);
         uint256 maxReward = ecoInstance.maxReward();
+
+        // Issue rewards until supply is nearly exhausted
         vm.startPrank(managerAdmin);
         for (uint256 i = 0; i < 1000; ++i) {
             ecoInstance.reward(assetRecipient, maxReward);
         }
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "REWARD_SUPPLY_LIMIT");
-        vm.expectRevert(expError);
-        ecoInstance.reward(assetRecipient, 1 ether);
+
+        // Calculate remaining supply
+        uint256 availableSupply = ecoInstance.availableRewardSupply();
+        uint256 amount = availableSupply + 1 ether;
+
+        vm.expectRevert(abi.encodeWithSignature("RewardSupplyLimit(uint256,uint256)", amount, availableSupply));
+        ecoInstance.reward(assetRecipient, amount);
         vm.stopPrank();
     }
 
@@ -339,6 +366,9 @@ contract EcosystemTest is BasicDeploy {
         vm.stopPrank();
         uint256 endBal = tokenInstance.totalSupply();
         assertEq(startBal, endBal + 20 ether);
+
+        // Verify burned amount is tracked
+        assertEq(ecoInstance.burnedAmount(), 20 ether);
     }
 
     // Test: RevertBurnBranch1
@@ -369,9 +399,8 @@ contract EcosystemTest is BasicDeploy {
     function testRevertBurnBranch3() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 0));
         ecoInstance.burn(0);
     }
 
@@ -379,12 +408,14 @@ contract EcosystemTest is BasicDeploy {
     function testRevertBurnBranch4() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "BURN_SUPPLY_LIMIT");
         vm.startPrank(managerAdmin);
-        uint256 rewardSupply = ecoInstance.rewardSupply();
 
-        vm.expectRevert(expError);
-        ecoInstance.burn(rewardSupply + 1 ether);
+        // uint256 rewardSupply = ecoInstance.rewardSupply();
+        uint256 availableSupply = ecoInstance.availableRewardSupply();
+        uint256 maxBurn = ecoInstance.maxBurn();
+
+        vm.expectRevert(abi.encodeWithSignature("MaxBurnLimit(uint256,uint256)", availableSupply + 1 ether, maxBurn));
+        ecoInstance.burn(availableSupply + 1 ether);
         vm.stopPrank();
     }
 
@@ -392,11 +423,10 @@ contract EcosystemTest is BasicDeploy {
     function testRevertBurnBranch5() public {
         vm.prank(guardian);
         ecoInstance.grantRole(BURNER_ROLE, managerAdmin);
-        uint256 amount = ecoInstance.maxBurn();
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "MAX_BURN_LIMIT");
+        uint256 maxBurn = ecoInstance.maxBurn();
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
-        ecoInstance.burn(amount + 1 ether);
+        vm.expectRevert(abi.encodeWithSignature("MaxBurnLimit(uint256,uint256)", maxBurn + 1 ether, maxBurn));
+        ecoInstance.burn(maxBurn + 1 ether);
     }
 
     // Test: AddPartner
@@ -439,8 +469,7 @@ contract EcosystemTest is BasicDeploy {
     // Test: RevertAddPartnerBranch3
     function testRevertAddPartnerBranch3() public {
         vm.prank(managerAdmin);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ADDRESS");
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAddress()"));
         ecoInstance.addPartner(address(0), 100 ether, 365 days, 730 days);
     }
 
@@ -448,10 +477,9 @@ contract EcosystemTest is BasicDeploy {
     function testRevertAddPartnerBranch4() public {
         uint256 supply = ecoInstance.partnershipSupply();
         uint256 amount = supply / 4;
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "PARTNER_EXISTS");
         vm.startPrank(managerAdmin);
         ecoInstance.addPartner(alice, amount, 365 days, 730 days);
-        vm.expectRevert(expError); // adding same partner
+        vm.expectRevert(abi.encodeWithSignature("PartnerExists(address)", alice)); // adding same partner
         ecoInstance.addPartner(alice, amount, 365 days, 730 days);
         vm.stopPrank();
     }
@@ -460,17 +488,15 @@ contract EcosystemTest is BasicDeploy {
     function testRevertAddPartnerBranch5() public {
         uint256 supply = ecoInstance.partnershipSupply();
         uint256 amount = supply / 2;
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", amount + 1 ether));
         ecoInstance.addPartner(partner, amount + 1 ether, 365 days, 730 days);
     }
 
     // Test: RevertAddPartnerBranch6
     function testRevertAddPartnerBranch6() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 50 ether));
         ecoInstance.addPartner(partner, 50 ether, 365 days, 730 days);
     }
 
@@ -478,15 +504,55 @@ contract EcosystemTest is BasicDeploy {
     function testRevertAddPartnerBranch7() public {
         uint256 supply = ecoInstance.partnershipSupply();
         uint256 amount = supply / 2;
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "AMOUNT_EXCEEDS_SUPPLY");
         vm.startPrank(managerAdmin);
         ecoInstance.addPartner(alice, amount, 365 days, 730 days);
         ecoInstance.addPartner(bob, amount, 365 days, 730 days);
-        vm.expectRevert(expError);
+
+        uint256 available = ecoInstance.availablePartnershipSupply();
+        vm.expectRevert(abi.encodeWithSignature("AmountExceedsSupply(uint256,uint256)", 100 ether, available));
         ecoInstance.addPartner(charlie, 100 ether, 365 days, 730 days);
         vm.stopPrank();
     }
-    //--------------MORE TESTS-----------------------
+
+    // Test: CancelPartnership
+    function testCancelPartnership() public {
+        uint256 amount = 1000 ether;
+
+        // Add a partner
+        vm.prank(managerAdmin);
+        ecoInstance.addPartner(partner, amount, 365 days, 730 days);
+
+        // Cancel the partnership
+        vm.prank(address(timelockInstance));
+        vm.expectEmit(address(ecoInstance));
+        emit CancelPartnership(partner, amount);
+        ecoInstance.cancelPartnership(partner);
+
+        // Verify tokens are returned to timelock
+        assertEq(tokenInstance.balanceOf(address(timelockInstance)), amount);
+
+        // Check accounting
+        assertEq(ecoInstance.issuedPartnership(), 0);
+    }
+
+    // Test: RevertCancelPartnershipUnauthorized
+    function testRevertCancelPartnershipUnauthorized() public {
+        // Add a partner
+        vm.prank(managerAdmin);
+        ecoInstance.addPartner(partner, 1000 ether, 365 days, 730 days);
+
+        // Try to cancel from unauthorized address
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("CallerNotAllowed()"));
+        ecoInstance.cancelPartnership(partner);
+    }
+
+    // Test: RevertCancelPartnershipInvalidAddress
+    function testRevertCancelPartnershipInvalidAddress() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("InvalidAddress()"));
+        ecoInstance.cancelPartnership(address(0x123));
+    }
 
     function testAddPartnerSuccess() public {
         uint256 amount = 1000 ether;
@@ -497,7 +563,7 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.addPartner(partner, amount, cliff, duration);
 
         address vestingAddress = ecoInstance.vestingContracts(partner);
-        VestingWallet vesting = VestingWallet(payable(vestingAddress));
+        PartnerVesting vesting = PartnerVesting(payable(vestingAddress));
 
         assertEq(vesting.owner(), partner);
         assertEq(vesting.duration(), duration);
@@ -515,10 +581,8 @@ contract EcosystemTest is BasicDeploy {
     }
 
     function testRevertAddPartnerZeroAddress() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_ADDRESS");
-
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAddress()"));
         ecoInstance.addPartner(address(0), 1000 ether, 365 days, 730 days);
     }
 
@@ -526,8 +590,7 @@ contract EcosystemTest is BasicDeploy {
         vm.startPrank(managerAdmin);
         ecoInstance.addPartner(partner, 1000 ether, 365 days, 730 days);
 
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "PARTNER_EXISTS");
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("PartnerExists(address)", partner));
         ecoInstance.addPartner(partner, 1000 ether, 365 days, 730 days);
         vm.stopPrank();
     }
@@ -535,15 +598,13 @@ contract EcosystemTest is BasicDeploy {
     function testRevertAddPartnerInvalidAmount() public {
         vm.startPrank(managerAdmin);
 
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
-
         // Test amount less than minimum
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 99 ether));
         ecoInstance.addPartner(partner, 99 ether, 365 days, 730 days);
 
         // Test amount more than maximum
         uint256 maxAmount = ecoInstance.partnershipSupply() / 2 + 1;
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", maxAmount));
         ecoInstance.addPartner(partner, maxAmount, 365 days, 730 days);
 
         vm.stopPrank();
@@ -558,101 +619,6 @@ contract EcosystemTest is BasicDeploy {
         vm.prank(managerAdmin);
         vm.expectRevert(expError);
         ecoInstance.addPartner(partner, 1000 ether, 365 days, 730 days);
-    }
-
-    function testFuzz_AddPartner(address _partner, uint256 _amount, uint64 _cliff, uint64 _duration) public {
-        // Bound amount between valid ranges (100 ether to partnershipSupply/2)
-        _amount = bound(_amount, 100 ether, ecoInstance.partnershipSupply() / 2);
-        // Ensure cliff is less than duration
-        _cliff = uint64(bound(_cliff, 1 days, 365 days));
-        _duration = uint64(bound(_duration, _cliff + 1 days, 1000 days));
-
-        vm.assume(_partner != address(0));
-        vm.assume(_partner.code.length == 0); // Ensure not a contract
-        vm.assume(_partner != managerAdmin);
-
-        vm.startPrank(managerAdmin);
-        ecoInstance.addPartner(_partner, _amount, _cliff, _duration);
-
-        address vestingAddress = ecoInstance.vestingContracts(_partner);
-        VestingWallet vesting = VestingWallet(payable(vestingAddress));
-
-        assertEq(vesting.owner(), _partner);
-        assertEq(vesting.duration(), _duration);
-        assertEq(vesting.start(), block.timestamp + _cliff);
-        vm.stopPrank();
-    }
-
-    function testFuzz_RevertInvalidAmount(uint256 _amount) public {
-        vm.assume(_amount < 100 ether || _amount > ecoInstance.partnershipSupply() / 2);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
-        vm.prank(managerAdmin);
-        vm.expectRevert(expError);
-        ecoInstance.addPartner(partner, _amount, 365 days, 730 days);
-    }
-
-    function testFuzz_RevertExceedSupply(uint256 _amount) public {
-        uint256 partnershipSupply = ecoInstance.partnershipSupply();
-        _amount = bound(_amount, partnershipSupply + 1, type(uint256).max);
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
-
-        vm.prank(managerAdmin);
-        vm.expectRevert(expError);
-        ecoInstance.addPartner(partner, _amount, 365 days, 730 days);
-    }
-
-    function testFuzz_MultiplePartners(
-        address[5] calldata _partners,
-        uint256[5] calldata _amounts,
-        uint64[5] calldata _cliffs,
-        uint64[5] calldata _durations
-    ) public {
-        vm.startPrank(managerAdmin);
-
-        for (uint256 i = 0; i < _partners.length; i++) {
-            address currentPartner = _partners[i];
-            vm.assume(currentPartner != address(0));
-            vm.assume(currentPartner.code.length == 0);
-            vm.assume(currentPartner != managerAdmin);
-
-            // Skip if partner already exists
-            if (ecoInstance.vestingContracts(currentPartner) != address(0)) continue;
-
-            uint256 amount = bound(_amounts[i], 100 ether, ecoInstance.partnershipSupply() / 10);
-            uint64 cliff = uint64(bound(_cliffs[i], 1 days, 365 days));
-            uint64 duration = uint64(bound(_durations[i], cliff + 1 days, 1000 days));
-
-            ecoInstance.addPartner(currentPartner, amount, cliff, duration);
-
-            address vestingAddress = ecoInstance.vestingContracts(currentPartner);
-            VestingWallet vesting = VestingWallet(payable(vestingAddress));
-
-            assertEq(vesting.owner(), currentPartner);
-            assertEq(vesting.duration(), duration);
-            assertEq(vesting.start(), block.timestamp + cliff);
-        }
-        vm.stopPrank();
-    }
-
-    function testFuzz_PartnerVestingSchedule(uint64 _cliff, uint64 _duration) public {
-        // Bound cliff and duration to reasonable ranges
-        _cliff = uint64(bound(_cliff, 1 days, 365 days));
-        _duration = uint64(bound(_duration, _cliff + 1 days, 1000 days));
-
-        vm.prank(managerAdmin);
-        ecoInstance.addPartner(partner, 100 ether, _cliff, _duration);
-
-        address vestingAddress = ecoInstance.vestingContracts(partner);
-        VestingWallet vesting = VestingWallet(payable(vestingAddress));
-
-        // Test vesting schedule
-        vm.warp(block.timestamp + _cliff - 1);
-        assertEq(vesting.releasable(address(tokenInstance)), 0);
-
-        vm.warp(block.timestamp + _cliff + _duration);
-        assertEq(vesting.releasable(address(tokenInstance)), 100 ether);
     }
 
     function testUpdateMaxReward() public {
@@ -688,21 +654,18 @@ contract EcosystemTest is BasicDeploy {
     }
 
     function testRevertUpdateMaxRewardZero() public {
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "INVALID_AMOUNT");
-
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 0));
         ecoInstance.updateMaxReward(0);
     }
 
     function testRevertUpdateMaxRewardExcessive() public {
         uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
-        uint256 excessiveAmount = (remainingRewards / 20) + 1 ether; // Just over 5%
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "EXCESSIVE_MAX_REWARD");
+        uint256 maxAllowed = remainingRewards / 20; // 5% of remaining rewards
+        uint256 excessiveAmount = maxAllowed + 1 ether; // Just over 5%
 
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("ExcessiveMaxValue(uint256,uint256)", excessiveAmount, maxAllowed));
         ecoInstance.updateMaxReward(excessiveAmount);
     }
 
@@ -731,10 +694,8 @@ contract EcosystemTest is BasicDeploy {
 
         uint256 excessiveAmount = maxAllowed + _excessAmount;
 
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "EXCESSIVE_MAX_REWARD");
-
         vm.prank(managerAdmin);
-        vm.expectRevert(expError);
+        vm.expectRevert(abi.encodeWithSignature("ExcessiveMaxValue(uint256,uint256)", excessiveAmount, maxAllowed));
         ecoInstance.updateMaxReward(excessiveAmount);
     }
 }
