@@ -78,38 +78,72 @@ contract GovernanceTokenV2 is
      */
     event BridgeMint(address indexed src, address indexed to, uint256 amount);
 
-    /// @dev event emitted on UUPS upgrades
-    /// @param src sender address
-    /// @param implementation new implementation address
+    /**
+     * @dev Emitted when the maximum bridge amount is updated
+     * @param admin The address that updated the value
+     * @param oldMaxBridge Previous maximum bridge amount
+     * @param newMaxBridge New maximum bridge amount
+     */
+    event MaxBridgeUpdated(address indexed admin, uint256 oldMaxBridge, uint256 newMaxBridge);
+
+    /**
+     * @dev Upgrade Event.
+     * @param src sender address
+     * @param implementation address
+     */
     event Upgrade(address indexed src, address indexed implementation);
 
-    /// @dev CustomError message
-    /// @param msg error description message
-    error CustomError(string msg);
+    // ============ Errors ============
+
+    /// @dev Error thrown when an address parameter is zero
+    error ZeroAddress();
+
+    /// @dev Error thrown when an amount parameter is zero
+    error ZeroAmount();
+
+    /// @dev Error thrown when a mint would exceed the max supply
+    error MaxSupplyExceeded(uint256 requested, uint256 maxAllowed);
+
+    /// @dev Error thrown when bridge amount exceeds allowed limit
+    error BridgeAmountExceeded(uint256 requested, uint256 maxAllowed);
+
+    /// @dev Error thrown when TGE is already initialized
+    error TGEAlreadyInitialized();
+
+    /// @dev Error thrown when addresses don't match expected values
+    error InvalidAddress(address provided, string reason);
+
+    /// @dev Error thrown for general validation failures
+    error ValidationFailed(string reason);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
+    receive() external payable {
+        revert("NO_ETHER_ACCEPTED");
+    }
     /**
      * @dev Initializes the UUPS contract.
      * @notice Sets up the initial state of the contract, including roles and token supplies.
      * @param guardian The address of the guardian (admin).
      * @custom:requires The guardian address must not be zero.
      * @custom:events-emits {Initialized} event.
-     * @custom:throws CustomError("ZERO_ADDRESS") if the guardian address is zero.
+     * @custom:throws ZeroAddress if the guardian address is zero.
      */
+
     function initializeUUPS(address guardian) external initializer {
         __ERC20_init("Lendefi DAO", "LEND");
         __ERC20Burnable_init();
         __ERC20Pausable_init();
         __AccessControl_init();
-        __ERC20Permit_init("Lendefi Coin");
+        __ERC20Permit_init("Lendefi DAO");
         __ERC20Votes_init();
         __UUPSUpgradeable_init();
 
-        require(guardian != address(0x0), "ZERO_ADDRESS");
+        if (guardian == address(0)) revert ZeroAddress();
+
         _grantRole(DEFAULT_ADMIN_ROLE, guardian);
         _grantRole(PAUSER_ROLE, guardian);
         initialSupply = INITIAL_SUPPLY;
@@ -126,12 +160,14 @@ contract GovernanceTokenV2 is
      * @custom:requires The ecosystem and treasury addresses must not be zero.
      * @custom:requires TGE must not be already initialized.
      * @custom:events-emits {TGE} event.
-     * @custom:throws CustomError("ZERO_ADDRESS") if any of the addresses are zero.
-     * @custom:throws CustomError("TGE_ALREADY_INITIALIZED") if TGE is already initialized.
+     * @custom:throws ZeroAddress if any address is zero.
+     * @custom:throws TGEAlreadyInitialized if TGE was already initialized.
      */
     function initializeTGE(address ecosystem, address treasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
-        if (ecosystem == address(0x0) || treasury == address(0x0)) revert CustomError({msg: "ZERO_ADDRESS"});
-        if (tge > 0) revert CustomError({msg: "TGE_ALREADY_INITIALIZED"});
+        if (ecosystem == address(0)) revert InvalidAddress(ecosystem, "Ecosystem address cannot be zero");
+        if (treasury == address(0)) revert InvalidAddress(treasury, "Treasury address cannot be zero");
+        if (tge > 0) revert TGEAlreadyInitialized();
+
         ++tge;
 
         emit TGE(initialSupply);
@@ -165,25 +201,56 @@ contract GovernanceTokenV2 is
     }
 
     /**
-     * @dev Facilitates Bridge BnM functionality called by the bridge app.
-     * @notice Mints new tokens to a specified address, called by an account with the BRIDGE_ROLE.
-     * @param to The address that will receive the minted tokens.
-     * @param amount The amount of tokens to mint.
+     * @dev Mints tokens for cross-chain bridge transfers
+     * @param to Address receiving the tokens
+     * @param amount Amount to mint
+     * @notice Can only be called by the official Bridge contract
      * @custom:requires-role BRIDGE_ROLE
-     * @custom:requires Amount must not exceed maxBridge.
-     * @custom:requires Total supply must not exceed initialSupply.
+     * @custom:requires Total supply must not exceed initialSupply
+     * @custom:requires to address must not be zero
+     * @custom:requires amount must not be zero
+     * @custom:requires amount must not exceed maxBridge limit
      * @custom:events-emits {BridgeMint} event
-     * @custom:throws CustomError("BRIDGE_LIMIT") if the amount exceeds maxBridge.
-     * @custom:throws CustomError("BRIDGE_PROBLEM") if the total supply exceeds initialSupply.
+     * @custom:throws ZeroAddress if recipient address is zero
+     * @custom:throws ZeroAmount if amount is zero
+     * @custom:throws BridgeAmountExceeded if amount exceeds maxBridge
+     * @custom:throws MaxSupplyExceeded if the mint would exceed initialSupply
      */
-    function bridgeMint(address to, uint256 amount) external onlyRole(BRIDGE_ROLE) {
-        if (amount > maxBridge) revert CustomError({msg: "BRIDGE_LIMIT"});
-        if (amount + totalSupply() > initialSupply) {
-            revert CustomError({msg: "BRIDGE_PROBLEM"});
+    function bridgeMint(address to, uint256 amount) external whenNotPaused onlyRole(BRIDGE_ROLE) {
+        // Input validation
+        if (to == address(0)) revert ZeroAddress();
+        if (amount == 0) revert ZeroAmount();
+        if (amount > maxBridge) revert BridgeAmountExceeded(amount, maxBridge);
+
+        // Supply constraint validation
+        uint256 newSupply = totalSupply() + amount;
+        if (newSupply > initialSupply) {
+            revert MaxSupplyExceeded(newSupply, initialSupply);
         }
 
-        emit BridgeMint(msg.sender, to, amount);
+        // Mint tokens
         _mint(to, amount);
+
+        // Emit event
+        emit BridgeMint(msg.sender, to, amount);
+    }
+
+    /**
+     * @dev Updates the maximum allowed bridge amount per transaction
+     * @param newMaxBridge New maximum bridge amount
+     * @notice Only callable by admin role
+     * @custom:requires-role DEFAULT_ADMIN_ROLE
+     * @custom:requires New amount must be greater than zero
+     * @custom:events-emits {MaxBridgeUpdated} event
+     * @custom:throws ZeroAmount if newMaxBridge is zero
+     */
+    function updateMaxBridgeAmount(uint256 newMaxBridge) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        if (newMaxBridge == 0) revert ZeroAmount();
+
+        uint256 oldMaxBridge = maxBridge;
+        maxBridge = newMaxBridge;
+
+        emit MaxBridgeUpdated(msg.sender, oldMaxBridge, newMaxBridge);
     }
 
     // The following functions are overrides required by Solidity.
@@ -202,6 +269,7 @@ contract GovernanceTokenV2 is
 
     /// @inheritdoc UUPSUpgradeable
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
+        if (newImplementation == address(0)) revert ZeroAddress();
         ++version;
         emit Upgrade(msg.sender, newImplementation);
     }
