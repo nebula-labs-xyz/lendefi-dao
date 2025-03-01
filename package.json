@@ -8,7 +8,7 @@
     "url": "git+https://github.com/nebula-labs-xyz/lendefi-dao.git"
   },
   "license": "BUSL-1.1",
-  "author": "Nebula Labs Inc",
+  "author": "Nebula Holding Inc",
   "scripts": {
     "build": "forge clean && forge build",
     "build:optimized": "FOUNDRY_PROFILE=optimized forge build",
