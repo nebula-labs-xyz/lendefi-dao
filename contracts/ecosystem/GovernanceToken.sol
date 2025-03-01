@@ -246,6 +246,8 @@ contract GovernanceToken is
      */
     function updateMaxBridgeAmount(uint256 newMaxBridge) external onlyRole(DEFAULT_ADMIN_ROLE) {
         if (newMaxBridge == 0) revert ZeroAmount();
+        // Add a reasonable cap, e.g., 10% of initial supply
+        if (newMaxBridge > initialSupply / 100) revert ValidationFailed("Bridge amount too high");
 
         uint256 oldMaxBridge = maxBridge;
         maxBridge = newMaxBridge;
