@@ -27,10 +27,27 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
     /// @dev timelock address
     address public immutable _timelock;
     /// @dev amount of tokens released
-    mapping(address token => uint256 amount) private _erc20Released;
+    uint256 private _tokensReleased;
 
     /**
-     * @dev Throws if called by any account other than the owner.
+     * @dev Custom errors
+     */
+    error Unauthorized();
+    error ZeroAddress();
+
+    /**
+     * @dev Contract initialization event
+     */
+    event VestingInitialized(
+        address indexed token,
+        address indexed beneficiary,
+        address indexed timelock,
+        uint64 startTimestamp,
+        uint64 duration
+    );
+
+    /**
+     * @dev Throws if called by any account other than the timelock.
      */
     modifier onlyTimelock() {
         _checkTimelock();
@@ -42,20 +59,25 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
      * vesting duration of the vesting contract.
      */
     constructor(address token, address timelock, address beneficiary, uint64 startTimestamp, uint64 durationSeconds)
-        payable
         Ownable(beneficiary)
     {
-        require(token != address(0x0) && timelock != address(0x0) && beneficiary != address(0x0), "ZERO_ADDRESS");
+        if (token == address(0) || timelock == address(0) || beneficiary == address(0)) {
+            revert ZeroAddress();
+        }
+
         _token = token;
         _timelock = timelock;
         _start = startTimestamp;
         _duration = durationSeconds;
+
+        emit VestingInitialized(token, beneficiary, timelock, startTimestamp, durationSeconds);
     }
 
     /**
-     * @dev Allows the DAO to cancel the contract in case the team member is fired.
-     *      Release vested amount and refund the remainder to timelock.
-     *      Can be called multiple times but will only transfer remaining balance.
+     * @dev Allows the DAO to cancel the contract in case the team member leaves.
+     * First releases any vested tokens to the beneficiary, then returns
+     * the remaining unvested tokens to the timelock controller.
+     * Can be called multiple times but will only transfer the remaining balance.
      */
     function cancelContract() external nonReentrant onlyTimelock {
         // Release vested tokens to beneficiary first
@@ -76,12 +98,13 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
 
     /**
      * @dev Release the tokens that have already vested.
-     *
      * Emits a {ERC20Released} event.
      */
     function release() public virtual {
         uint256 amount = releasable();
-        _erc20Released[_token] += amount;
+        if (amount == 0) return;
+
+        _tokensReleased += amount;
         emit ERC20Released(_token, amount);
         SafeERC20.safeTransfer(IERC20(_token), owner(), amount);
     }
@@ -115,11 +138,11 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
      * @return amount of tokens released so far
      */
     function released() public view virtual returns (uint256) {
-        return _erc20Released[_token];
+        return _tokensReleased;
     }
 
     /**
-     * @dev Getter for the amount of releasable `token` ERC20 tokens.
+     * @dev Getter for the amount of releasable tokens.
      * @return amount of vested tokens
      */
     function releasable() public view virtual returns (uint256) {
@@ -131,7 +154,7 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
      */
     function _checkTimelock() internal view virtual {
         if (_timelock != _msgSender()) {
-            revert CustomError("UNAUTHORIZED");
+            revert Unauthorized();
         }
     }
 
@@ -145,7 +168,7 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
     }
 
     /**
-     * @dev Virtual implementation of the vesting formula. This returns the amount vested, as a function of time, for
+     * @dev Implementation of the vesting formula. This returns the amount vested, as a function of time, for
      * an asset given its total historical allocation.
      * @param totalAllocation initial amount
      * @param timestamp current timestamp
