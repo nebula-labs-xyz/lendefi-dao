@@ -105,9 +105,11 @@ contract BasicDeploy is Test {
 
     function deployEcosystemUpgrade() internal {
         _deployToken();
+        _deployTimelock();
 
         // ecosystem deploy
-        bytes memory data1 = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
+        bytes memory data1 =
+            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, pauser));
         address payable proxy1 = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data1));
         ecoInstance = Ecosystem(proxy1);
         address ecoImplementation = Upgrades.getImplementationAddress(proxy1);
@@ -287,8 +289,8 @@ contract BasicDeploy is Test {
     function deployComplete() internal {
         vm.warp(365 days);
         _deployToken();
-        _deployEcosystem();
         _deployTimelock();
+        _deployEcosystem();
         _deployGovernor();
 
         // reset timelock proposers and executors
@@ -316,7 +318,8 @@ contract BasicDeploy is Test {
 
     function _deployEcosystem() internal {
         // ecosystem deploy
-        bytes memory data = abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), guardian, pauser));
+        bytes memory data =
+            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, pauser));
         address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data));
         ecoInstance = Ecosystem(proxy);
         address ecoImplementation = Upgrades.getImplementationAddress(proxy);
