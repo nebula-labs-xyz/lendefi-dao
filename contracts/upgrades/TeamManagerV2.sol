@@ -67,17 +67,16 @@ contract TeamManagerV2 is
     /// @dev gap for future storage variables
     uint256[50] private __gap;
 
-    /// @dev Prevents receiving Ether
-    receive() external payable {
-        revert();
-    }
     // ============ Constructor ============
-
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
+    /// @dev Prevents receiving Ether
 
+    receive() external payable {
+        revert("NO_ETHER_ACCEPTED");
+    }
     // ============ External Functions ============
 
     /**
