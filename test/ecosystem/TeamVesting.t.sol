@@ -15,6 +15,13 @@ contract TeamVestingTest is BasicDeploy {
 
     // Events
     event ERC20Released(address indexed token, uint256 amount);
+    event VestingInitialized(
+        address indexed token,
+        address indexed beneficiary,
+        address indexed timelock,
+        uint64 startTimestamp,
+        uint64 duration
+    );
     event AddPartner(address account, address vesting, uint256 amount);
     event Cancelled(uint256 amount);
 
@@ -46,10 +53,10 @@ contract TeamVestingTest is BasicDeploy {
         assertEq(vesting.duration(), VESTING_DURATION);
 
         // Test zero address validations
-        vm.expectRevert("ZERO_ADDRESS");
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
         new TeamVesting(address(0), address(0x2), address(0x3), startTimestamp, VESTING_DURATION);
 
-        vm.expectRevert("ZERO_ADDRESS");
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
         new TeamVesting(address(tokenInstance), address(0), address(0x3), startTimestamp, VESTING_DURATION);
 
         vm.expectRevert(abi.encodeWithSignature("OwnableInvalidOwner(address)", address(0)));
@@ -263,11 +270,11 @@ contract TeamVestingTest is BasicDeploy {
     function testUnauthorizedCancel() public {
         // Try to cancel from unauthorized address
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "UNAUTHORIZED"));
+        vm.expectRevert(abi.encodeWithSignature("Unauthorized()"));
         vestingContract.cancelContract();
 
         vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "UNAUTHORIZED"));
+        vm.expectRevert(abi.encodeWithSignature("Unauthorized()"));
         vestingContract.cancelContract();
     }
 
@@ -315,6 +322,19 @@ contract TeamVestingTest is BasicDeploy {
         assertEq(tokenInstance.balanceOf(alice), claimable);
         assertEq(tokenInstance.balanceOf(address(vestingContract)), 0);
     }
+
+    /*//////////////////////////////////////////////////////////////
+                        INITIALIZATION EVENTS TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testInitializationEvents() public {
+        // Deploy a new vesting contract and check initialization event
+        vm.expectEmit(true, true, true, true);
+        emit VestingInitialized(address(tokenInstance), address(0x3), address(0x2), startTimestamp, VESTING_DURATION);
+
+        new TeamVesting(address(tokenInstance), address(0x2), address(0x3), startTimestamp, VESTING_DURATION);
+    }
+
     /*//////////////////////////////////////////////////////////////
                             RELEASABLE TESTS
     //////////////////////////////////////////////////////////////*/
@@ -387,6 +407,26 @@ contract TeamVestingTest is BasicDeploy {
 
         assertEq(vestingContract.releasable(), expectedReleasable, "Should account for all previous releases");
     }
+
+    /*//////////////////////////////////////////////////////////////
+                            RELEASE TESTS
+    //////////////////////////////////////////////////////////////*/
+
+    function testReleaseWithZeroAmount() public {
+        // Test release when releasable is 0 (before vesting starts)
+        vm.warp(vestingContract.start() - 1);
+
+        // Get current released amount
+        uint256 beforeReleased = vestingContract.released();
+
+        // Call release and verify it doesn't revert and doesn't change state
+        vm.prank(alice);
+        vestingContract.release();
+
+        assertEq(vestingContract.released(), beforeReleased, "Released amount should not change");
+        assertEq(tokenInstance.balanceOf(alice), 0, "No tokens should be transferred");
+    }
+
     /*//////////////////////////////////////////////////////////////
                             FUZZ TESTS
     //////////////////////////////////////////////////////////////*/
@@ -497,7 +537,16 @@ contract TeamVestingTest is BasicDeploy {
     }
 
     function _deployAndFundVesting() internal {
-        // Deploy vesting contract
+        // Deploy vesting contract with VestingInitialized event expectation
+        vm.expectEmit(true, true, true, true);
+        emit VestingInitialized(
+            address(tokenInstance),
+            alice,
+            address(timelockInstance),
+            uint64(startTimestamp + CLIFF_PERIOD),
+            VESTING_DURATION
+        );
+
         vestingContract = new TeamVesting(
             address(tokenInstance),
             address(timelockInstance),
