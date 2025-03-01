@@ -121,36 +121,32 @@ contract GovernanceTokenTest is BasicDeploy {
     function test_Revert_BridgeMint_Branch4() public {
         _initializeTGE();
 
-        // First increase the max bridge amount to prevent BridgeAmountExceeded error
+        // Update maxBridge to the maximum allowed amount (1% of initial supply)
+        uint256 maxAllowedBridge = tokenInstance.initialSupply() / 100;
         vm.prank(guardian);
-        tokenInstance.updateMaxBridgeAmount(50_000_000 ether); // Set to max supply
+        tokenInstance.updateMaxBridgeAmount(maxAllowedBridge);
 
-        // Burn most of the supply to get close to max
-        vm.prank(address(ecoInstance));
-        tokenInstance.burn(21_999_950 ether);
-        vm.prank(address(treasuryInstance));
-        tokenInstance.burn(27_999_950 ether);
-
-        // Check remaining supply (should be 100 ether exactly)
+        // Make sure we're at max supply already - we shouldn't need to burn anything
+        // as the TGE already minted all 50M tokens
         uint256 currentSupply = tokenInstance.totalSupply();
-        assertEq(currentSupply, 100 ether);
+        assertEq(currentSupply, tokenInstance.initialSupply());
 
-        // Try to mint more than what's left to max supply
-        uint256 excessiveAmount = tokenInstance.initialSupply() - currentSupply + 100 ether;
+        // Use an amount that's UNDER the maxBridge limit but would still exceed supply
+        uint256 bridgeAmount = maxAllowedBridge / 2; // 250K ether, well under the 500K bridge limit
 
         // Give proper access
         vm.prank(guardian);
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
-        // Calculate the supply after the attempted mint
-        uint256 newSupplyAfterMint = currentSupply + excessiveAmount;
+        // Calculate the new supply after this mint
+        uint256 newSupplyAfterMint = currentSupply + bridgeAmount;
 
-        // Try to bridge - should revert with MaxSupplyExceeded
+        // Try to bridge mint - should revert with MaxSupplyExceeded since we're already at max supply
         vm.expectRevert(
             abi.encodeWithSelector(MaxSupplyExceeded.selector, newSupplyAfterMint, tokenInstance.initialSupply())
         );
         vm.prank(bridge);
-        tokenInstance.bridgeMint(alice, excessiveAmount);
+        tokenInstance.bridgeMint(alice, bridgeAmount);
     }
 
     function test_UpdateMaxBridgeAmount() public {
