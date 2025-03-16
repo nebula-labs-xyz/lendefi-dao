@@ -3,10 +3,123 @@ pragma solidity 0.8.23;
 
 /**
  * @title Lendefi DAO Ecosystem Interface
- * @notice Interface for the Ecosystem contract that handles airdrops, rewards, burning, and partnerships
+ * @notice Interface for the Ecosystem contract that handles airdrops, rewards, burning, partnerships, and secure upgrades
  * @dev Defines all external functions and events for the Ecosystem contract
+ * @custom:security-contact security@nebula-labs.xyz
+ * @custom:copyright Copyright (c) 2025 Nebula Holding Inc. All rights reserved.
  */
 interface IECOSYSTEM {
+    // ============ Structs ============
+
+    /// @dev Structure to track pending upgrades with timelock
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
+
+    // ============ Events ============
+
+    /**
+     * @dev Emitted when the contract is initialized
+     * @param initializer The address that initialized the contract
+     */
+    event Initialized(address indexed initializer);
+
+    /**
+     * @dev Emitted when an airdrop is executed
+     * @param winners Array of addresses that received the airdrop
+     * @param amount Amount of tokens each address received
+     */
+    event AirDrop(address[] indexed winners, uint256 amount);
+
+    /**
+     * @dev Emitted when a reward is distributed
+     * @param sender The address that initiated the reward
+     * @param recipient The address that received the reward
+     * @param amount The amount of tokens awarded
+     */
+    event Reward(address indexed sender, address indexed recipient, uint256 amount);
+
+    /**
+     * @dev Emitted when tokens are burned
+     * @param burner The address that initiated the burn
+     * @param amount The amount of tokens burned
+     */
+    event Burn(address indexed burner, uint256 amount);
+
+    /**
+     * @dev Emitted when a new partner is added
+     * @param partner The address of the partner
+     * @param vestingContract The address of the partner's vesting contract
+     * @param amount The amount of tokens allocated to the partner
+     */
+    event AddPartner(address indexed partner, address indexed vestingContract, uint256 amount);
+
+    /**
+     * @dev Emitted when a partnership is cancelled
+     * @param partner The address of the partner whose contract was cancelled
+     * @param remainingAmount The amount of tokens returned to the timelock
+     */
+    event CancelPartnership(address indexed partner, uint256 remainingAmount);
+
+    /**
+     * @dev Emitted when the maximum reward amount is updated
+     * @param updater The address that updated the maximum reward
+     * @param oldValue The previous maximum reward value
+     * @param newValue The new maximum reward value
+     */
+    event MaxRewardUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
+
+    /**
+     * @dev Emitted when the maximum burn amount is updated
+     * @param updater The address that updated the maximum burn
+     * @param oldValue The previous maximum burn value
+     * @param newValue The new maximum burn value
+     */
+    event MaxBurnUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
+
+    /**
+     * @dev Emitted when the contract is upgraded
+     * @param upgrader The address that performed the upgrade
+     * @param newImplementation The address of the new implementation
+     * @param version The new version number
+     */
+    event Upgrade(address indexed upgrader, address indexed newImplementation, uint32 version);
+
+    /**
+     * @dev Emitted when an upgrade is scheduled
+     * @param sender The address that scheduled the upgrade
+     * @param implementation The new implementation address
+     * @param scheduledTime The time when the upgrade was scheduled
+     * @param effectiveTime The time when the upgrade can be executed
+     */
+    event UpgradeScheduled(
+        address indexed sender, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
+    );
+
+    /**
+     * @dev Emitted when an emergency withdrawal is executed
+     * @param token Address of the token withdrawn
+     * @param amount Amount withdrawn
+     */
+    event EmergencyWithdrawal(address indexed token, uint256 amount);
+
+    // ============ Errors ============
+    /**
+     * @dev Error thrown for general validation failures
+     * @param reason Description of the validation failure
+     */
+    error ValidationFailed(string reason);
+    /// @dev Thrown when trying to execute an upgrade too soon
+    error UpgradeTimelockActive(uint256 remainingTime);
+
+    /// @dev Thrown when trying to execute an upgrade that wasn't scheduled
+    error UpgradeNotScheduled();
+
+    /// @dev Thrown when trying to execute an upgrade with wrong implementation
+    error ImplementationMismatch(address expected, address provided);
+
     /**
      * @dev Error thrown when a zero address is provided where a non-zero address is required
      */
@@ -85,87 +198,21 @@ interface IECOSYSTEM {
     error ExcessiveMaxValue(uint256 amount, uint256 maxAllowed);
 
     /**
-     * @dev Error thrown when a function is called by an unauthorized account
+     * @dev Thrown when attempting to set an invalid vesting duration
      */
-    error CallerNotAllowed();
+    error InvalidVestingSchedule();
 
-    /**
-     * @dev Emitted when the contract is initialized
-     * @param initializer The address that initialized the contract
-     */
-    event Initialized(address indexed initializer);
-
-    /**
-     * @dev Emitted when an airdrop is executed
-     * @param winners Array of addresses that received the airdrop
-     * @param amount Amount of tokens each address received
-     */
-    event AirDrop(address[] indexed winners, uint256 amount);
-
-    /**
-     * @dev Emitted when a reward is distributed
-     * @param sender The address that initiated the reward
-     * @param recipient The address that received the reward
-     * @param amount The amount of tokens awarded
-     */
-    event Reward(address indexed sender, address indexed recipient, uint256 amount);
-
-    /**
-     * @dev Emitted when tokens are burned
-     * @param burner The address that initiated the burn
-     * @param amount The amount of tokens burned
-     */
-    event Burn(address indexed burner, uint256 amount);
-
-    /**
-     * @dev Emitted when a new partner is added
-     * @param partner The address of the partner
-     * @param vestingContract The address of the partner's vesting contract
-     * @param amount The amount of tokens allocated to the partner
-     */
-    event AddPartner(address indexed partner, address indexed vestingContract, uint256 amount);
-
-    /**
-     * @dev Emitted when a partnership is cancelled
-     * @param partner The address of the partner whose contract was cancelled
-     * @param remainingAmount The amount of tokens returned to the timelock
-     */
-    event CancelPartnership(address indexed partner, uint256 remainingAmount);
-
-    /**
-     * @dev Emitted when the maximum reward amount is updated
-     * @param updater The address that updated the maximum reward
-     * @param oldValue The previous maximum reward value
-     * @param newValue The new maximum reward value
-     */
-    event MaxRewardUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
-
-    /**
-     * @dev Emitted when the maximum burn amount is updated
-     * @param updater The address that updated the maximum burn
-     * @param oldValue The previous maximum burn value
-     * @param newValue The new maximum burn value
-     */
-    event MaxBurnUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
-
-    /**
-     * @dev Emitted when the contract is upgraded
-     * @param upgrader The address that performed the upgrade
-     * @param newImplementation The address of the new implementation
-     * @param version The new version number
-     */
-    event Upgrade(address indexed upgrader, address indexed newImplementation, uint32 version);
+    // ============ Functions ============
 
     /**
      * @notice Initializes the ecosystem contract
      * @dev Sets up the initial state of the contract, including roles and token supplies
      * @param token Address of the governance token
      * @param timelockAddr Address of the timelock controller for partner vesting cancellation
-     * @param guardian Address of the guardian (admin)
-     * @param pauser Address of the pauser
-     * @custom:throws ZeroAddressDetected if any address is zero
+     * @param guardian Address of the guardian (receives PAUSER_ROLE)
+     * @param multisig Address of the multisig (receives UPGRADER_ROLE)
      */
-    function initialize(address token, address timelockAddr, address guardian, address pauser) external;
+    function initialize(address token, address timelockAddr, address guardian, address multisig) external;
 
     /**
      * @notice Pauses all contract operations
@@ -180,13 +227,32 @@ interface IECOSYSTEM {
     function unpause() external;
 
     /**
+     * @notice Schedules an upgrade to a new implementation
+     * @dev Can only be called by accounts with the UPGRADER_ROLE
+     * @param newImplementation Address of the new implementation
+     */
+    function scheduleUpgrade(address newImplementation) external;
+
+    /**
+     * @notice Returns the remaining time before a scheduled upgrade can be executed
+     * @dev Returns 0 if no upgrade is scheduled or timelock has passed
+     * @return The time remaining in seconds
+     */
+    function upgradeTimelockRemaining() external view returns (uint256);
+
+    /**
+     * @notice Emergency function to withdraw tokens to the timelock
+     * @dev Can only be called by accounts with the MANAGER_ROLE
+     * @param token The token to withdraw
+     * @param amount The amount to withdraw
+     */
+    function emergencyWithdraw(address token, uint256 amount) external;
+
+    /**
      * @notice Distributes tokens to multiple recipients
      * @dev Performs an airdrop of a fixed amount of tokens to each address in the recipients array
      * @param recipients Array of addresses to receive the airdrop
      * @param amount Amount of tokens each recipient will receive
-     * @custom:throws InvalidAmount if amount is less than 1 ether
-     * @custom:throws AirdropSupplyLimit if total exceeds available supply
-     * @custom:throws GasLimit if recipients array is too large
      */
     function airdrop(address[] calldata recipients, uint256 amount) external;
 
@@ -195,9 +261,6 @@ interface IECOSYSTEM {
      * @dev Transfers a specified amount of tokens to a recipient as a reward
      * @param to Recipient address
      * @param amount Amount of tokens to reward
-     * @custom:throws InvalidAmount if amount is zero
-     * @custom:throws RewardLimit if amount exceeds maximum reward
-     * @custom:throws RewardSupplyLimit if amount exceeds available supply
      */
     function reward(address to, uint256 amount) external;
 
@@ -205,9 +268,6 @@ interface IECOSYSTEM {
      * @notice Burns tokens from the reward supply
      * @dev Permanently removes tokens from circulation, updating supply calculations
      * @param amount Amount of tokens to burn
-     * @custom:throws InvalidAmount if amount is zero
-     * @custom:throws MaxBurnLimit if amount exceeds maximum burn
-     * @custom:throws BurnSupplyLimit if amount exceeds available supply
      */
     function burn(uint256 amount) external;
 
@@ -218,10 +278,6 @@ interface IECOSYSTEM {
      * @param amount Amount of tokens to vest
      * @param cliff Cliff period in seconds
      * @param duration Vesting duration in seconds
-     * @custom:throws InvalidAddress if partner address is zero
-     * @custom:throws PartnerExists if partner already has a vesting contract
-     * @custom:throws InvalidAmount if amount is outside allowed range
-     * @custom:throws AmountExceedsSupply if total exceeds partnership supply
      */
     function addPartner(address partner, uint256 amount, uint256 cliff, uint256 duration) external;
 
@@ -229,8 +285,6 @@ interface IECOSYSTEM {
      * @notice Cancels a partner's vesting contract
      * @dev Returns unvested tokens to the timelock and updates accounting
      * @param partner Address of the partner
-     * @custom:throws CallerNotAllowed if caller is not the timelock
-     * @custom:throws InvalidAddress if no vesting contract exists for partner
      */
     function cancelPartnership(address partner) external;
 
@@ -238,8 +292,6 @@ interface IECOSYSTEM {
      * @notice Updates the maximum one-time reward amount
      * @dev Sets a new limit on the maximum tokens that can be rewarded in one transaction
      * @param newMaxReward New maximum reward value
-     * @custom:throws InvalidAmount if new value is zero
-     * @custom:throws ExcessiveMaxValue if value exceeds allowed percentage of supply
      */
     function updateMaxReward(uint256 newMaxReward) external;
 
@@ -247,8 +299,6 @@ interface IECOSYSTEM {
      * @notice Updates the maximum one-time burn amount
      * @dev Sets a new limit on the maximum tokens that can be burned in one transaction
      * @param newMaxBurn New maximum burn value
-     * @custom:throws InvalidAmount if new value is zero
-     * @custom:throws ExcessiveMaxValue if value exceeds allowed percentage of supply
      */
     function updateMaxBurn(uint256 newMaxBurn) external;
 
@@ -274,87 +324,82 @@ interface IECOSYSTEM {
     function availablePartnershipSupply() external view returns (uint256);
 
     /**
+     * @notice Information about the pending upgrade request
+     * @dev Returns details of the currently scheduled upgrade, if any
+     * @return The pending upgrade request details
+     */
+    // function pendingUpgrade() external view returns (UpgradeRequest memory);
+
+    /**
      * @notice Gets the total reward supply
-     * @dev Returns the total amount of tokens allocated for rewards
      * @return The total reward supply
      */
     function rewardSupply() external view returns (uint256);
 
     /**
      * @notice Gets the maximum reward amount
-     * @dev Returns the maximum tokens that can be rewarded in one transaction
      * @return The maximum reward amount
      */
     function maxReward() external view returns (uint256);
 
     /**
      * @notice Gets the total amount of tokens issued as rewards
-     * @dev Returns the cumulative amount of tokens that have been rewarded
      * @return The total issued reward amount
      */
     function issuedReward() external view returns (uint256);
 
     /**
      * @notice Gets the total amount of tokens burned
-     * @dev Returns the cumulative amount of tokens that have been burned
      * @return The total burned amount
      */
     function burnedAmount() external view returns (uint256);
 
     /**
      * @notice Gets the maximum burn amount
-     * @dev Returns the maximum tokens that can be burned in one transaction
      * @return The maximum burn amount
      */
     function maxBurn() external view returns (uint256);
 
     /**
      * @notice Gets the total airdrop supply
-     * @dev Returns the total amount of tokens allocated for airdrops
      * @return The total airdrop supply
      */
     function airdropSupply() external view returns (uint256);
 
     /**
      * @notice Gets the total amount of tokens issued via airdrops
-     * @dev Returns the cumulative amount of tokens that have been airdropped
      * @return The total issued airdrop amount
      */
     function issuedAirDrop() external view returns (uint256);
 
     /**
      * @notice Gets the total partnership supply
-     * @dev Returns the total amount of tokens allocated for partnerships
      * @return The total partnership supply
      */
     function partnershipSupply() external view returns (uint256);
 
     /**
      * @notice Gets the total amount of tokens issued to partners
-     * @dev Returns the cumulative amount of tokens that have been allocated to partners
      * @return The total issued partnership amount
      */
     function issuedPartnership() external view returns (uint256);
 
     /**
      * @notice Gets the contract version
-     * @dev Returns the version number, which is incremented with each upgrade
      * @return The current version number
      */
     function version() external view returns (uint32);
 
     /**
      * @notice Gets the timelock address
-     * @dev Returns the address of the timelock controller used for governance actions
      * @return The timelock address
      */
     function timelock() external view returns (address);
 
     /**
      * @notice Gets the vesting contract address for a partner
-     * @dev Returns the address of the vesting contract created for a specific partner
      * @param partner The address of the partner
-     * @return The vesting contract address, or zero address if none exists
+     * @return The vesting contract address
      */
     function vestingContracts(address partner) external view returns (address);
 }
