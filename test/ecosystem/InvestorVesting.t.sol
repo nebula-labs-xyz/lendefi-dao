@@ -40,9 +40,9 @@ contract InvestorVestingTest is BasicDeploy {
         ecoInstance.airdrop(investors, 200_000 ether); //put some tokens into vesting contract
     }
 
-    function testConstructorZeroAddress() public {
+    function testRevert_ConstructorZeroAddress() public {
         // Test zero token address
-        vm.expectRevert("ZERO_ADDRESS");
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
         new InvestorVesting(
             address(0), // zero token address
             alice,
@@ -61,13 +61,13 @@ contract InvestorVestingTest is BasicDeploy {
     }
 
     // Test case: Check if an investor is added correctly
-    function testInvestorAdded() public {
+    function test_InvestorAdded() public {
         address owner = vestingContract.owner();
         assertEq(owner, alice, "Investor's is the owner");
     }
 
     // Test case: Check the vesting claim functionality
-    function testClaim() public {
+    function test_Claim() public {
         uint256 amountToClaimBefore = vestingContract.releasable();
 
         vm.warp(block.timestamp + 450 days); // Move forward in time
@@ -86,8 +86,36 @@ contract InvestorVestingTest is BasicDeploy {
         assertEq(remainingBalance, 200_000 ether - amountClaimed, "Vested amount should reduce after claim");
     }
 
+    // Test case: Edge case of claiming after the vesting period
+    function test_ClaimAfterVestingPeriod() public {
+        vm.warp(block.timestamp + 1095 days); // Move beyond the vesting period
+
+        uint256 claimableAmount = vestingContract.releasable();
+        uint256 totalVested = 200_000 ether;
+
+        assertEq(
+            claimableAmount,
+            totalVested,
+            "Claimable amount should be equal to the total vested after the vesting period"
+        );
+    }
+
+    // Test case: Ensure no double claiming
+    function test_NoDoubleClaiming() public {
+        vm.warp(block.timestamp + 700 days);
+        vestingContract.release(); // First claim
+        uint256 claimAmountAfterFirstClaim = vestingContract.released();
+        assertTrue(claimAmountAfterFirstClaim > 0, "Claim should be successful");
+
+        // Trying to claim again should not change anything
+        vestingContract.release();
+        uint256 claimAmountAfterSecondClaim = vestingContract.released();
+
+        assertEq(claimAmountAfterFirstClaim, claimAmountAfterSecondClaim);
+    }
+
     // Fuzz Test case: Check the claimable amount under various times
-    function testFuzzClaimableAmount(uint256 _daysForward) public {
+    function testFuzz_ClaimableAmount(uint256 _daysForward) public {
         vm.assume(_daysForward <= 730); // Assume within vesting period
         // Move forward in time
         vm.warp(block.timestamp + 365 days + _daysForward * 1 days);
@@ -98,7 +126,7 @@ contract InvestorVestingTest is BasicDeploy {
     }
 
     // Fuzz Test: Claim edge cases (before and after vesting period)
-    function testFuzzClaimEdgeCases(uint256 _daysForward) public {
+    function testFuzz_ClaimEdgeCases(uint256 _daysForward) public {
         vm.assume(_daysForward <= 730); // Assume max vesting period is 100 days + some buffer
 
         if (_daysForward >= 730) {
@@ -116,36 +144,8 @@ contract InvestorVestingTest is BasicDeploy {
         }
     }
 
-    // Test case: Edge case of claiming after the vesting period
-    function testClaimAfterVestingPeriod() public {
-        vm.warp(block.timestamp + 1095 days); // Move beyond the vesting period
-
-        uint256 claimableAmount = vestingContract.releasable();
-        uint256 totalVested = 200_000 ether;
-
-        assertEq(
-            claimableAmount,
-            totalVested,
-            "Claimable amount should be equal to the total vested after the vesting period"
-        );
-    }
-
-    // Test case: Ensure no double claiming
-    function testNoDoubleClaiming() public {
-        vm.warp(block.timestamp + 700 days);
-        vestingContract.release(); // First claim
-        uint256 claimAmountAfterFirstClaim = vestingContract.released();
-        assertTrue(claimAmountAfterFirstClaim > 0, "Claim should be successful");
-
-        // Trying to claim again should not change anything
-        vestingContract.release();
-        uint256 claimAmountAfterSecondClaim = vestingContract.released();
-
-        assertEq(claimAmountAfterFirstClaim, claimAmountAfterSecondClaim);
-    }
-
     // Fuzz Test: Ensure no claim is possible before vesting starts
-    function testFuzzNoClaimBeforeVesting(uint256 _daysBefore) public {
+    function testFuzz_NoClaimBeforeVesting(uint256 _daysBefore) public {
         vm.assume(_daysBefore <= 365); //cliff
         vm.warp(block.timestamp + _daysBefore * 1 days);
 
