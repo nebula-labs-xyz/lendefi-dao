@@ -8,6 +8,7 @@ import {Upgrades, Options} from "openzeppelin-foundry-upgrades/Upgrades.sol";
 
 contract GovernanceTokenTest is BasicDeploy {
     uint256 internal vmprimer = 365 days;
+    bytes32 internal constant TGE_ROLE = keccak256("TGE_ROLE");
 
     // Events
     event WithdrawEther(address to, uint256 amount);
@@ -28,7 +29,7 @@ contract GovernanceTokenTest is BasicDeploy {
         deployComplete();
         assertEq(tokenInstance.totalSupply(), 0);
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
         vm.warp(vmprimer);
     }
@@ -90,7 +91,7 @@ contract GovernanceTokenTest is BasicDeploy {
         tokenInstance.burn(20 ether);
         assertEq(tokenInstance.balanceOf(alice), 80 ether);
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
         vm.prank(bridge);
         vm.expectEmit();
@@ -110,7 +111,7 @@ contract GovernanceTokenTest is BasicDeploy {
         ecoInstance.airdrop(winners, amount);
 
         // give proper access
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
         // try to bridge
         vm.expectRevert(abi.encodeWithSelector(BridgeAmountExceeded.selector, amount, tokenInstance.maxBridge()));
@@ -123,7 +124,7 @@ contract GovernanceTokenTest is BasicDeploy {
 
         // Update maxBridge to the maximum allowed amount (1% of initial supply)
         uint256 maxAllowedBridge = tokenInstance.initialSupply() / 100;
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.updateMaxBridgeAmount(maxAllowedBridge);
 
         // Make sure we're at max supply already - we shouldn't need to burn anything
@@ -135,7 +136,7 @@ contract GovernanceTokenTest is BasicDeploy {
         uint256 bridgeAmount = maxAllowedBridge / 2; // 250K ether, well under the 500K bridge limit
 
         // Give proper access
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
         // Calculate the new supply after this mint
@@ -153,23 +154,23 @@ contract GovernanceTokenTest is BasicDeploy {
         uint256 oldMaxBridge = tokenInstance.maxBridge();
         uint256 newMaxBridge = 10_000 ether;
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectEmit(address(tokenInstance));
-        emit MaxBridgeUpdated(guardian, oldMaxBridge, newMaxBridge);
+        emit MaxBridgeUpdated(address(timelockInstance), oldMaxBridge, newMaxBridge);
         tokenInstance.updateMaxBridgeAmount(newMaxBridge);
 
         assertEq(tokenInstance.maxBridge(), newMaxBridge, "Max bridge amount should be updated");
     }
 
     function testRevert_UpdateMaxBridgeAmount_ZeroAmount() public {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectRevert(ZeroAmount.selector);
         tokenInstance.updateMaxBridgeAmount(0);
     }
 
     function testRevert_UpdateMaxBridgeAmount_Unauthorized() public {
         bytes memory expError =
-            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, DEFAULT_ADMIN_ROLE);
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, MANAGER_ROLE);
 
         vm.prank(alice);
         vm.expectRevert(expError);
@@ -191,11 +192,11 @@ contract GovernanceTokenTest is BasicDeploy {
 
         // Update max bridge amount to a higher value
         uint256 newMaxBridge = 30_000 ether;
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.updateMaxBridgeAmount(newMaxBridge);
 
         // Setup bridge role
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
         // Try to bridge with an amount between old and new limit
@@ -210,7 +211,7 @@ contract GovernanceTokenTest is BasicDeploy {
         _initializeTGE();
 
         // Grant bridge role
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
         // Try to mint to zero address
@@ -223,7 +224,7 @@ contract GovernanceTokenTest is BasicDeploy {
         _initializeTGE();
 
         // Grant bridge role
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
         // Try to mint zero tokens
@@ -236,7 +237,7 @@ contract GovernanceTokenTest is BasicDeploy {
         _initializeTGE();
 
         // Grant bridge role
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
         // Pause the contract
@@ -306,14 +307,15 @@ contract GovernanceTokenTest is BasicDeploy {
 
     function testRevert_AuthorizeUpgrade_Unauthorized() public {
         // token deploy
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
+        bytes memory data =
+            abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance), gnosisSafe));
         address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
         tokenInstance = GovernanceToken(proxy);
         address tokenImplementation = Upgrades.getImplementationAddress(proxy);
         assertFalse(address(tokenInstance) == tokenImplementation);
 
         // upgrade token
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(UPGRADER_ROLE, managerAdmin);
 
         // Mock call for upgrade attempt to test authorization check only
@@ -336,16 +338,16 @@ contract GovernanceTokenTest is BasicDeploy {
 
     function testRevertInitializeTGE_Unauthorized() public {
         bytes memory expError =
-            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, DEFAULT_ADMIN_ROLE);
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, TGE_ROLE);
 
         vm.prank(alice);
         vm.expectRevert(expError);
         tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
     }
 
-    function test_Revert_Receive() public returns (bool success) {
-        vm.deal(address(this), 100 ether);
-        vm.expectRevert(); // contract does not receive ether
+    //Test: RevertReceive
+    function testRevert_Receive() public returns (bool success) {
+        vm.expectRevert(abi.encodeWithSignature("ValidationFailed(string)", "NO_ETHER_ACCEPTED")); // contract does not receive ether
         (success,) = payable(address(tokenInstance)).call{value: 100 ether}("");
     }
 
@@ -353,7 +355,7 @@ contract GovernanceTokenTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
-        tokenInstance.initializeUUPS(guardian);
+        tokenInstance.initializeUUPS(guardian, address(timelockInstance), gnosisSafe);
     }
 
     function test_Transfer() public {
@@ -366,17 +368,17 @@ contract GovernanceTokenTest is BasicDeploy {
 
         // Check balances
         assertEq(tokenInstance.balanceOf(alice), transferAmount);
-        assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 28_000_000 ether - transferAmount);
+        assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 27_400_000 ether - transferAmount);
     }
 
     function test_RoleManagement() public {
         // Test granting roles
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.grantRole(PAUSER_ROLE, pauser);
         assertTrue(tokenInstance.hasRole(PAUSER_ROLE, pauser));
 
         // Test revoking roles
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.revokeRole(PAUSER_ROLE, pauser);
         assertFalse(tokenInstance.hasRole(PAUSER_ROLE, pauser));
     }
@@ -389,9 +391,10 @@ contract GovernanceTokenTest is BasicDeploy {
         tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
         uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
         uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
+        uint256 guardianBal = tokenInstance.balanceOf(guardian);
 
         assertEq(ecoBal, 22_000_000 ether);
-        assertEq(treasuryBal, 28_000_000 ether);
-        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
+        assertEq(treasuryBal, 27_400_000 ether);
+        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal + guardianBal);
     }
 }
