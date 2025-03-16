@@ -8,7 +8,7 @@ pragma solidity 0.8.23;
  */
 
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {Ownable2StepUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Ownable2StepUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
 import {GovernorUpgradeable} from "@openzeppelin/contracts-upgradeable/governance/GovernorUpgradeable.sol";
 import {GovernorSettingsUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/extensions/GovernorSettingsUpgradeable.sol";
@@ -33,103 +33,116 @@ contract LendefiGovernorV2 is
     GovernorVotesUpgradeable,
     GovernorVotesQuorumFractionUpgradeable,
     GovernorTimelockControlUpgradeable,
-    Ownable2StepUpgradeable,
+    AccessControlUpgradeable,
     UUPSUpgradeable
 {
-    /// @dev UUPS version tracker
-    uint32 public uupsVersion;
+    /**
+     * @dev Role identifier for addresses that can upgrade the contract
+     * @custom:security Should be granted carefully as this is a critical permission
+     */
+    bytes32 internal constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
 
-    /// @dev GnosisSafe address for emergency operations
-    address public gnosisSafe;
-
-    /// @dev Emergency action constants
+    /**
+     * @notice Default voting delay in blocks (approximately 1 day)
+     * @dev The period after a proposal is created during which voting cannot start
+     */
     uint48 public constant DEFAULT_VOTING_DELAY = 7200; // ~1 day
+
+    /**
+     * @notice Default voting period in blocks (approximately 1 week)
+     * @dev The period during which voting can occur
+     */
     uint32 public constant DEFAULT_VOTING_PERIOD = 50400; // ~1 week
+
+    /**
+     * @notice Default proposal threshold (20,000 tokens)
+     * @dev The minimum number of votes needed to submit a proposal
+     */
     uint256 public constant DEFAULT_PROPOSAL_THRESHOLD = 20_000 ether; // 20,000 tokens
 
-    /// @dev Upgrade timelock duration in seconds (3 days)
+    /**
+     * @notice Duration of the timelock for upgrade operations (3 days)
+     * @dev Time that must elapse between scheduling and executing an upgrade
+     * @custom:security Provides time for users to respond to potentially malicious upgrades
+     */
     uint256 public constant UPGRADE_TIMELOCK_DURATION = 3 days;
 
-    /// @dev Structure to hold upgrade request details
+    /**
+     * @notice UUPS upgrade version tracker
+     * @dev Incremented with each upgrade to track contract versions
+     */
+    uint32 public uupsVersion;
+
+    /**
+     * @notice Structure to store pending upgrade details
+     * @param implementation Address of the new implementation contract
+     * @param scheduledTime Timestamp when the upgrade was scheduled
+     * @param exists Boolean flag indicating if an upgrade is currently scheduled
+     */
     struct UpgradeRequest {
         address implementation;
         uint64 scheduledTime;
         bool exists;
     }
 
-    /// @dev Pending upgrade information
+    /**
+     * @notice Information about the currently pending upgrade
+     * @dev Will have exists=false if no upgrade is pending
+     */
     UpgradeRequest public pendingUpgrade;
-    /// @dev Storage gap for future upgrades
-    uint256[22] private __gap;
 
     /**
-     * @dev Initialized Event.
-     * @param src sender address
+     * @dev Reserved storage space for future upgrades
+     * @custom:oz-upgrades-unsafe-allow state-variable-immutable
+     */
+    uint256[21] private __gap;
+
+    /**
+     * @notice Emitted when the contract is initialized
+     * @param src The address that initialized the contract
      */
     event Initialized(address indexed src);
 
     /**
-     * @dev event emitted on UUPS upgrade
-     * @param src upgrade sender address
-     * @param implementation new implementation address
+     * @notice Emitted when the contract is upgraded
+     * @param src The address that executed the upgrade
+     * @param implementation The address of the new implementation
      */
     event Upgrade(address indexed src, address indexed implementation);
 
     /**
-     * @dev Event emitted when an upgrade is scheduled
-     * @param scheduler address scheduling the upgrade
-     * @param implementation new implementation address
-     * @param scheduledTime when upgrade was scheduled
-     * @param effectiveTime when upgrade can be executed
+     * @notice Emitted when an upgrade is scheduled
+     * @param scheduler The address scheduling the upgrade
+     * @param implementation The new implementation contract address
+     * @param scheduledTime The timestamp when the upgrade was scheduled
+     * @param effectiveTime The timestamp when the upgrade can be executed
      */
     event UpgradeScheduled(
         address indexed scheduler, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
     );
 
     /**
-     * @dev Event emitted when governance settings are updated via emergency reset
-     */
-    event GovernanceSettingsUpdated(
-        address indexed caller, uint256 votingDelay, uint256 votingPeriod, uint256 proposalThreshold
-    );
-
-    /**
-     * @dev Event emitted when gnosisSafe address is updated
-     */
-    event GnosisSafeUpdated(address indexed oldGnosisSafe, address indexed newGnosisSafe);
-
-    /**
-     * @dev Error thrown when an address parameter is zero
+     * @notice Error thrown when a zero address is provided
      */
     error ZeroAddress();
 
     /**
-     * @dev Error thrown when unauthorized access
-     */
-    error UnauthorizedAccess();
-
-    /**
-     * @dev Error thrown when trying to upgrade before timelock expires
+     * @notice Error thrown when attempting to execute an upgrade before timelock expires
+     * @param timeRemaining The time remaining until the upgrade can be executed
      */
     error UpgradeTimelockActive(uint256 timeRemaining);
 
     /**
-     * @dev Error thrown when trying to upgrade without scheduling first
+     * @notice Error thrown when attempting to execute an upgrade that wasn't scheduled
      */
     error UpgradeNotScheduled();
 
     /**
-     * @dev Error thrown when implementation address doesn't match scheduled upgrade
+     * @notice Error thrown when implementation address doesn't match scheduled upgrade
+     * @param scheduledImpl The address that was scheduled for upgrade
+     * @param attemptedImpl The address that was attempted to be used
      */
     error ImplementationMismatch(address scheduledImpl, address attemptedImpl);
-
-    /**
-     * @dev Modifier to restrict access to gnosisSafe only
-     */
-    modifier onlyGnosisSafe() {
-        if (msg.sender != gnosisSafe) revert UnauthorizedAccess();
-        _;
-    }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -140,13 +153,13 @@ contract LendefiGovernorV2 is
      * @dev Initializes the UUPS contract
      * @param _token IVotes token instance
      * @param _timelock timelock instance
-     * @param _gnosisSafe gnosis safe address for emergency functions and upgrades
+     * @param _gnosisSafe multisig address for emergency functions and upgrades
      */
     function initialize(IVotes _token, TimelockControllerUpgradeable _timelock, address _gnosisSafe)
         external
         initializer
     {
-        if (_gnosisSafe == address(0x0) || address(_timelock) == address(0x0) || address(_token) == address(0x0)) {
+        if (_gnosisSafe == address(0) || address(_timelock) == address(0) || address(_token) == address(0)) {
             revert ZeroAddress();
         }
 
@@ -156,36 +169,23 @@ contract LendefiGovernorV2 is
         __GovernorVotes_init(_token);
         __GovernorVotesQuorumFraction_init(1);
         __GovernorTimelockControl_init(_timelock);
-        __Ownable_init(_gnosisSafe); // Set the gnosisSafe as the owner
+        __AccessControl_init();
         __UUPSUpgradeable_init();
 
-        // Set gnosisSafe address
-        gnosisSafe = _gnosisSafe;
+        // Role setup consistent with other contracts
+        _grantRole(DEFAULT_ADMIN_ROLE, address(_timelock));
+        _grantRole(UPGRADER_ROLE, _gnosisSafe);
 
         ++uupsVersion;
         emit Initialized(msg.sender);
     }
 
     /**
-     * @notice Updates the gnosisSafe address
-     * @dev Can only be called by the current gnosisSafe address
-     * @param newGnosisSafe The new gnosisSafe address
-     */
-    function updateGnosisSafe(address newGnosisSafe) external onlyGnosisSafe {
-        if (newGnosisSafe == address(0x0)) {
-            revert ZeroAddress();
-        }
-        address oldGnosisSafe = gnosisSafe;
-        gnosisSafe = newGnosisSafe;
-        emit GnosisSafeUpdated(oldGnosisSafe, newGnosisSafe);
-    }
-    /**
      * @notice Schedules an upgrade to a new implementation with timelock
-     * @dev Can only be called by the gnosisSafe address
+     * @dev Can only be called by addresses with UPGRADER_ROLE
      * @param newImplementation Address of the new implementation contract
      */
-
-    function scheduleUpgrade(address newImplementation) external onlyGnosisSafe {
+    function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) {
         if (newImplementation == address(0)) revert ZeroAddress();
 
         uint64 currentTime = uint64(block.timestamp);
@@ -299,8 +299,18 @@ contract LendefiGovernorV2 is
         return super._executor();
     }
 
+    /// @inheritdoc GovernorUpgradeable
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(GovernorUpgradeable, AccessControlUpgradeable)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+
     /// @inheritdoc UUPSUpgradeable
-    function _authorizeUpgrade(address newImplementation) internal override onlyGnosisSafe {
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
         if (!pendingUpgrade.exists) {
             revert UpgradeNotScheduled();
         }
