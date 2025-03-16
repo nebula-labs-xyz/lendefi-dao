@@ -6,7 +6,6 @@ import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGuard {
@@ -22,33 +21,6 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
     address public immutable _creator;
     /// @dev amount of tokens released
     uint256 private _tokensReleased;
-
-    /**
-     * @dev Custom errors
-     */
-    error Unauthorized();
-    error ZeroAddress();
-
-    /**
-     * @dev Contract initialization event
-     */
-    event VestingInitialized(
-        address indexed token,
-        address indexed beneficiary,
-        address indexed timelock,
-        uint64 startTimestamp,
-        uint64 duration
-    );
-
-    // /**
-    //  * @dev Tokens released event
-    //  */
-    // event ERC20Released(address indexed token, uint256 amount);
-
-    // /**
-    //  * @dev Contract cancelled event
-    //  */
-    // event Cancelled(uint256 amount);
 
     /**
      * @dev Throws if called by any account other than the timelock or creator.
@@ -85,36 +57,29 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
      * @return remainder The amount of tokens returned to the creator
      * Can only be called by the creator (Ecosystem contract).
      */
-    function cancelContract() external nonReentrant onlyAuthorized returns (uint256) {
-        // Release vested tokens to beneficiary first
-        if (releasable() > 0) {
-            release();
+    function cancelContract() external nonReentrant onlyAuthorized returns (uint256 remainder) {
+        IERC20 tokenInstance = IERC20(_token);
+        uint256 releasableAmount = releasable();
+
+        // Release vested tokens directly without calling release()
+        if (releasableAmount > 0) {
+            _tokensReleased += releasableAmount;
+            emit ERC20Released(_token, releasableAmount);
+            SafeERC20.safeTransfer(tokenInstance, owner(), releasableAmount);
         }
 
         // Get current balance
-        IERC20 tokenInstance = IERC20(_token);
-        uint256 remainder = tokenInstance.balanceOf(address(this));
+        remainder = tokenInstance.balanceOf(address(this));
 
         // Only emit event and transfer if there are tokens to transfer
         if (remainder > 0) {
             emit Cancelled(remainder);
             SafeERC20.safeTransfer(tokenInstance, _creator, remainder);
         }
-
-        return remainder;
-    }
-
-    /**
-     * @dev Throws if the sender is not authorized to cancel.
-     */
-    function _checkAuthorized() internal view virtual {
-        if (_creator != _msgSender()) {
-            revert Unauthorized();
-        }
     }
 
     // Rest of the contract remains the same...
-    function release() public virtual {
+    function release() public virtual nonReentrant {
         uint256 amount = releasable();
         if (amount == 0) return;
 
@@ -140,7 +105,7 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
     }
 
     function releasable() public view virtual returns (uint256) {
-        return vestedAmount(SafeCast.toUint64(block.timestamp)) - released();
+        return vestedAmount(uint64(block.timestamp)) - released();
     }
 
     function vestedAmount(uint64 timestamp) internal view virtual returns (uint256) {
@@ -154,5 +119,14 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
             return totalAllocation;
         }
         return (totalAllocation * (timestamp - start())) / duration();
+    }
+
+    /**
+     * @dev Throws if the sender is not authorized to cancel.
+     */
+    function _checkAuthorized() internal view virtual {
+        if (_creator != _msgSender()) {
+            revert Unauthorized();
+        }
     }
 }
