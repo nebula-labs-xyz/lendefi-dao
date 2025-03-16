@@ -38,7 +38,17 @@ contract LendefiGovernor is
 {
     /// @dev UUPS version tracker
     uint32 public uupsVersion;
-    uint256[50] private __gap;
+
+    /// @dev GnosisSafe address for emergency operations
+    address public gnosisSafe;
+
+    /// @dev Emergency action constants
+    uint48 public constant DEFAULT_VOTING_DELAY = 7200; // ~1 day
+    uint32 public constant DEFAULT_VOTING_PERIOD = 50400; // ~1 week
+    uint256 public constant DEFAULT_PROPOSAL_THRESHOLD = 20_000 ether; // 20,000 tokens
+
+    /// @dev Storage gap for future upgrades
+    uint256[48] private __gap;
 
     /**
      * @dev Initialized Event.
@@ -54,10 +64,34 @@ contract LendefiGovernor is
     event Upgrade(address indexed src, address indexed implementation);
 
     /**
-     * @dev Custom Error.
-     * @param msg error desription
+     * @dev Event emitted when governance settings are updated via emergency reset
      */
-    error CustomError(string msg);
+    event GovernanceSettingsUpdated(
+        address indexed caller, uint256 votingDelay, uint256 votingPeriod, uint256 proposalThreshold
+    );
+
+    /**
+     * @dev Event emitted when gnosisSafe address is updated
+     */
+    event GnosisSafeUpdated(address indexed oldGnosisSafe, address indexed newGnosisSafe);
+
+    /**
+     * @dev Error thrown when an address parameter is zero
+     */
+    error ZeroAddress();
+
+    /**
+     * @dev Error thrown when unauthorized access
+     */
+    error UnauthorizedAccess();
+
+    /**
+     * @dev Modifier to restrict access to gnosisSafe only
+     */
+    modifier onlyGnosisSafe() {
+        if (msg.sender != gnosisSafe) revert UnauthorizedAccess();
+        _;
+    }
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -68,26 +102,44 @@ contract LendefiGovernor is
      * @dev Initializes the UUPS contract
      * @param _token IVotes token instance
      * @param _timelock timelock instance
-     * @param guardian owner address
+     * @param _gnosisSafe gnosis safe address for emergency functions and upgrades
      */
-    function initialize(IVotes _token, TimelockControllerUpgradeable _timelock, address guardian)
+    function initialize(IVotes _token, TimelockControllerUpgradeable _timelock, address _gnosisSafe)
         external
         initializer
     {
-        if (guardian == address(0x0) || address(_timelock) == address(0x0) || address(_token) == address(0x0)) {
-            revert CustomError("ZERO_ADDRESS_DETECTED");
+        if (_gnosisSafe == address(0x0) || address(_timelock) == address(0x0) || address(_token) == address(0x0)) {
+            revert ZeroAddress();
         }
+
         __Governor_init("Lendefi Governor");
-        __GovernorSettings_init(7200, /* 1 day */ 50400, /* 1 week */ 20000e18);
+        __GovernorSettings_init(DEFAULT_VOTING_DELAY, DEFAULT_VOTING_PERIOD, DEFAULT_PROPOSAL_THRESHOLD);
         __GovernorCountingSimple_init();
         __GovernorVotes_init(_token);
         __GovernorVotesQuorumFraction_init(1);
         __GovernorTimelockControl_init(_timelock);
-        __Ownable_init(guardian);
+        __Ownable_init(_gnosisSafe); // Set the gnosisSafe as the owner
         __UUPSUpgradeable_init();
+
+        // Set gnosisSafe address
+        gnosisSafe = _gnosisSafe;
 
         ++uupsVersion;
         emit Initialized(msg.sender);
+    }
+
+    /**
+     * @notice Updates the gnosisSafe address
+     * @dev Can only be called by the current gnosisSafe address
+     * @param newGnosisSafe The new gnosisSafe address
+     */
+    function updateGnosisSafe(address newGnosisSafe) external onlyGnosisSafe {
+        if (newGnosisSafe == address(0x0)) {
+            revert ZeroAddress();
+        }
+        address oldGnosisSafe = gnosisSafe;
+        gnosisSafe = newGnosisSafe;
+        emit GnosisSafeUpdated(oldGnosisSafe, newGnosisSafe);
     }
 
     // The following functions are overrides required by Solidity.
@@ -141,12 +193,6 @@ contract LendefiGovernor is
         return super.proposalThreshold();
     }
 
-    /// @inheritdoc UUPSUpgradeable
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {
-        ++uupsVersion;
-        emit Upgrade(msg.sender, newImplementation);
-    }
-
     /// @inheritdoc GovernorUpgradeable
     function _queueOperations(
         uint256 proposalId,
@@ -187,5 +233,11 @@ contract LendefiGovernor is
         returns (address)
     {
         return super._executor();
+    }
+
+    /// @inheritdoc UUPSUpgradeable
+    function _authorizeUpgrade(address newImplementation) internal override onlyGnosisSafe {
+        ++uupsVersion;
+        emit Upgrade(msg.sender, newImplementation);
     }
 }
