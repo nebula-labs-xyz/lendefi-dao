@@ -4,18 +4,24 @@ pragma solidity ^0.8.23;
 import "../BasicDeploy.sol"; // solhint-disable-line
 // import {console2} from "forge-std/console2.sol";
 import {LendefiGovernor} from "../../contracts/ecosystem/LendefiGovernor.sol"; // Path to your contract
+import {LendefiGovernorV2} from "../../contracts/upgrades/LendefiGovernorV2.sol"; // Path to your contract
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {TimelockControllerUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
 
 contract LendefiGovernorTest is BasicDeploy {
-    // TimelockControllerUpgradeable public timelock;
-    // Set up initial conditions before each test
+    event Initialized(address indexed src);
+
+    event GovernanceSettingsUpdated(
+        address indexed caller, uint256 votingDelay, uint256 votingPeriod, uint256 proposalThreshold
+    );
+    event GnosisSafeUpdated(address indexed oldGnosisSafe, address indexed newGnosisSafe);
 
     function setUp() public {
         vm.warp(365 days);
-        deployToken();
         deployTimelock();
+        deployToken();
+
         deployEcosystem();
         deployGovernor();
         setupTimelockRoles();
@@ -27,14 +33,14 @@ contract LendefiGovernorTest is BasicDeploy {
     // Test: RevertInitialization
     function testRevertInitialization() public {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         vm.expectRevert(expError); // contract already initialized
         govInstance.initialize(tokenInstance, timelockInstance, guardian);
     }
 
     // Test: RightOwner
     function testRightOwner() public {
-        assertTrue(govInstance.owner() == guardian);
+        assertTrue(govInstance.owner() == gnosisSafe);
     }
 
     // Test: CreateProposal
@@ -254,7 +260,7 @@ contract LendefiGovernorTest is BasicDeploy {
 
         assertTrue(state7 == IGovernor.ProposalState.Executed); //proposal executed
         assertEq(tokenInstance.balanceOf(managerAdmin), 1 ether);
-        assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 28_000_000 ether - 1 ether);
+        assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 27_400_000 ether - 1 ether);
     }
 
     // Test: ProposeQuorumDefeat
@@ -456,19 +462,22 @@ contract LendefiGovernorTest is BasicDeploy {
 
     //Test: InitialOwner
     function testInitialOwner() public {
-        assertEq(govInstance.owner(), guardian);
+        assertEq(govInstance.owner(), gnosisSafe);
         assertEq(govInstance.pendingOwner(), address(0));
     }
 
     //Test: TransferOwnership
-    function testTransferOwnership() public {
-        vm.prank(guardian);
+    function test_TransferOwnership() public {
+        vm.prank(gnosisSafe);
         govInstance.transferOwnership(alice);
 
         // Check pending owner is set
         assertEq(govInstance.pendingOwner(), alice);
         // Check current owner hasn't changed
-        assertEq(govInstance.owner(), guardian);
+        assertEq(govInstance.owner(), gnosisSafe);
+        vm.prank(alice);
+        govInstance.acceptOwnership();
+        assertEq(govInstance.owner(), alice);
     }
 
     //Test: TransferOwnershipUnauthorized
@@ -482,7 +491,7 @@ contract LendefiGovernorTest is BasicDeploy {
     // Test: AcceptOwnership
     function testAcceptOwnership() public {
         // Set up pending ownership transfer
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         govInstance.transferOwnership(alice);
 
         // Accept ownership as new owner
@@ -497,7 +506,7 @@ contract LendefiGovernorTest is BasicDeploy {
     //Test: AcceptOwnershipUnauthorized
     function testAcceptOwnershipUnauthorized() public {
         // Set up pending ownership transfer
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         govInstance.transferOwnership(alice);
 
         // Try to accept ownership from unauthorized account
@@ -510,24 +519,24 @@ contract LendefiGovernorTest is BasicDeploy {
     // Test: CancelTransferOwnership
     function testCancelTransferOwnership() public {
         // Set up pending ownership transfer
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         govInstance.transferOwnership(alice);
 
         // Cancel transfer by setting pending owner to zero address
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         govInstance.transferOwnership(address(0));
 
         // Verify pending owner is cleared
         assertEq(govInstance.pendingOwner(), address(0));
         // Verify current owner hasn't changed
-        assertEq(govInstance.owner(), guardian);
+        assertEq(govInstance.owner(), gnosisSafe);
     }
 
     // Test: Ownership Transfer
     function testOwnershipTransfer() public {
         // Transfer ownership to a new address
         address newOwner = address(0x123);
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         govInstance.transferOwnership(newOwner);
 
         // Verify the new owner
@@ -545,7 +554,7 @@ contract LendefiGovernorTest is BasicDeploy {
     // Test: Ownership Renouncement
     function testOwnershipRenouncement() public {
         // Renounce ownership
-        vm.prank(guardian);
+        vm.prank(gnosisSafe);
         govInstance.renounceOwnership();
 
         // Verify that the owner is set to the zero address
@@ -568,28 +577,91 @@ contract LendefiGovernorTest is BasicDeploy {
         bytes memory data = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockContract, guardian));
 
         // Expect revert with zero address error
-        vm.expectRevert(abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS_DETECTED"));
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
 
         // Try to deploy proxy with zero address timelock
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), data);
         assertFalse(address(proxy) == address(implementation));
     }
 
-    function deployToken() internal {
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        tokenInstance = GovernanceToken(proxy);
-        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(tokenInstance) == tokenImplementation);
+    // Test: GnosisSafe address after initialization
+    function testGnosisSafeInitialization() public {
+        assertEq(govInstance.gnosisSafe(), gnosisSafe);
     }
 
-    function deployEcosystem() internal {
-        bytes memory data =
-            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, pauser));
-        address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data));
-        ecoInstance = Ecosystem(proxy);
-        address ecoImplementation = Upgrades.getImplementationAddress(proxy);
-        assertFalse(address(ecoInstance) == ecoImplementation);
+    // Test: Update gnosisSafe address
+    function testUpdateGnosisSafe() public {
+        address oldGnosisSafe = govInstance.gnosisSafe();
+        address newGnosisSafe = address(0x123);
+
+        vm.prank(gnosisSafe);
+        govInstance.updateGnosisSafe(newGnosisSafe);
+
+        assertEq(govInstance.gnosisSafe(), newGnosisSafe);
+        assertNotEq(govInstance.gnosisSafe(), oldGnosisSafe);
+    }
+
+    // Test: Update gnosisSafe revert on zero address
+    function testRevertUpdateGnosisSafeZeroAddress() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
+        govInstance.updateGnosisSafe(address(0));
+    }
+
+    // Test: Update gnosisSafe unauthorized
+    function testRevertUpdateGnosisSafeUnauthorized() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("UnauthorizedAccess()"));
+        govInstance.updateGnosisSafe(address(0x123));
+    }
+
+    // Test: GnosisSafeUpdated event emission
+    function testGnosisSafeUpdatedEvent() public {
+        address oldGnosisSafe = gnosisSafe;
+        address newGnosisSafe = address(0x123);
+
+        vm.expectEmit(true, true, false, false);
+        emit GnosisSafeUpdated(oldGnosisSafe, newGnosisSafe);
+
+        vm.prank(gnosisSafe);
+        govInstance.updateGnosisSafe(newGnosisSafe);
+    }
+
+    // Test: _authorizeUpgrade with gnosisSafe permission
+    function test_AuthorizeUpgrade() public {
+        // upgrade Governor
+        address proxy = address(govInstance);
+        vm.startPrank(gnosisSafe);
+        Upgrades.upgradeProxy(proxy, "LendefiGovernorV2.sol", "", gnosisSafe);
+
+        LendefiGovernorV2 govInstanceV2 = LendefiGovernorV2(payable(proxy));
+        assertEq(govInstanceV2.uupsVersion(), 2);
+        vm.stopPrank();
+    }
+
+    // Test: _authorizeUpgrade unauthorized
+    function testRevert_UpgradeUnauthorized() public {
+        // Create a new implementation contract directly
+        LendefiGovernor newImplementation = new LendefiGovernor();
+
+        // Try to call the upgrade function directly as an unauthorized user
+        vm.prank(alice);
+
+        // Need to use the selector directly since UUPSUpgradeable doesn't expose upgradeTo
+        vm.expectRevert(abi.encodeWithSignature("UnauthorizedAccess()"));
+
+        // Use a low-level call with the correct function selector
+        (bool success,) = address(govInstance).call(
+            abi.encodeWithSelector(0x3659cfe6, address(newImplementation)) // upgradeTo(address)
+        );
+        assertFalse(success);
+    }
+
+    // Test: Default constants match expected values
+    function testDefaultConstants() public {
+        assertEq(govInstance.DEFAULT_VOTING_DELAY(), 7200);
+        assertEq(govInstance.DEFAULT_VOTING_PERIOD(), 50400);
+        assertEq(govInstance.DEFAULT_PROPOSAL_THRESHOLD(), 20_000 ether);
     }
 
     function deployTimelock() internal {
@@ -607,10 +679,28 @@ contract LendefiGovernorTest is BasicDeploy {
         timelockInstance = TimelockControllerUpgradeable(payable(address(proxy1)));
     }
 
+    function deployToken() internal {
+        bytes memory data =
+            abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance), gnosisSafe));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
+        tokenInstance = GovernanceToken(proxy);
+        address tokenImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(tokenInstance) == tokenImplementation);
+    }
+
+    function deployEcosystem() internal {
+        bytes memory data =
+            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, pauser));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data));
+        ecoInstance = Ecosystem(proxy);
+        address ecoImplementation = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(ecoInstance) == ecoImplementation);
+    }
+
     function deployGovernor() internal {
         bytes memory data = abi.encodeCall(
             LendefiGovernor.initialize,
-            (tokenInstance, TimelockControllerUpgradeable(payable(address(timelockInstance))), guardian)
+            (tokenInstance, TimelockControllerUpgradeable(payable(address(timelockInstance))), gnosisSafe)
         );
         address payable proxy = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data));
         govInstance = LendefiGovernor(proxy);
@@ -630,7 +720,8 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     function deployTreasury() internal {
-        bytes memory data = abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance)));
+        bytes memory data =
+            abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance), gnosisSafe, 180 days, 1095 days));
         address payable proxy = payable(Upgrades.deployUUPSProxy("Treasury.sol", data));
         treasuryInstance = Treasury(proxy);
         address tImplementation = Upgrades.getImplementationAddress(proxy);
@@ -643,14 +734,16 @@ contract LendefiGovernorTest is BasicDeploy {
         tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
         uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
         uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
+        uint256 guardianBal = tokenInstance.balanceOf(guardian);
 
         assertEq(ecoBal, 22_000_000 ether);
-        assertEq(treasuryBal, 28_000_000 ether);
-        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
+        assertEq(treasuryBal, 27_400_000 ether);
+        assertEq(guardianBal, 600_000 ether);
+        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal + guardianBal);
     }
 
     function setupEcosystemRoles() internal {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
         assertEq(govInstance.uupsVersion(), 1);
     }
