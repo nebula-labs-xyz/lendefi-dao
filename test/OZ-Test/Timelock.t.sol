@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {Test} from "forge-std/Test.sol";
+import {BasicDeploy} from "../BasicDeploy.sol";
 import {TimelockControllerUpgradeable} from
     "@openzeppelin/contracts-upgradeable/governance/TimelockControllerUpgradeable.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -10,7 +10,7 @@ import {LendefiGovernor} from "../../contracts/ecosystem/LendefiGovernor.sol";
 import {Upgrades, Options} from "openzeppelin-foundry-upgrades/Upgrades.sol";
 import {GovernanceToken} from "../../contracts/ecosystem/GovernanceToken.sol";
 
-contract TimelockTest is Test {
+contract TimelockTest is BasicDeploy {
     TimelockControllerUpgradeable public timelock;
     address public admin;
     uint256 public minDelay;
@@ -98,16 +98,15 @@ contract TimelockTest is Test {
         assertEq(timelock.getMinDelay(), 2 days);
     }
 
-    function testDeployGovernor() public {
-        address guardian = address(0x1);
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian));
+    function test_DeployGovernor() public {
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelock), gnosisSafe));
         address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-        GovernanceToken tokenInstance = GovernanceToken(proxy);
+        tokenInstance = GovernanceToken(proxy);
         address tokenImplementation = Upgrades.getImplementationAddress(proxy);
         assertFalse(address(tokenInstance) == tokenImplementation);
         bytes memory data1 = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelock, guardian));
         address payable proxy1 = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data1));
-        LendefiGovernor govInstance = LendefiGovernor(proxy1);
+        govInstance = LendefiGovernor(proxy1);
         address govImplementation = Upgrades.getImplementationAddress(proxy1);
         assertFalse(address(govInstance) == govImplementation);
     }
