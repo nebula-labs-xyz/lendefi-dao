@@ -1,18 +1,17 @@
-// SPDX-License-Identifier: MIT
-// Derived from OpenZeppelin Contracts (last updated v5.0.0) (finance/VestingWallet.sol)
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.23;
-/**
- * @title Lendefi DAO Treasury Contract
- * @notice Vesting contract: initialRelease + (36 month duration)
- * @notice Offers flexible withdrawal schedule (gas efficient)
- * @dev Implements secure and upgradeable DAO treasury with linear vesting
- * @custom:security-contact security@nebula-labs.xysz
- */
 
+/**
+ * @title Lendefi DAO Treasury
+ * @notice Treasury contract with 3-year linear vesting and external multisig support
+ * @dev Implements a secure and upgradeable treasury with vesting for ETH and ERC20 tokens
+ * @custom:security-contact security@nebula-labs.xyz
+ * @custom:copyright Copyright (c) 2025 Nebula Holding Inc. All rights reserved.
+ */
 import {ITREASURY} from "../interfaces/ITreasury.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Address} from "@openzeppelin/contracts/utils/Address.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
-import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {PausableUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/PausableUpgradeable.sol";
@@ -23,228 +22,448 @@ import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/ut
 contract Treasury is
     ITREASURY,
     Initializable,
+    UUPSUpgradeable,
     PausableUpgradeable,
     AccessControlUpgradeable,
-    ReentrancyGuardUpgradeable,
-    UUPSUpgradeable
+    ReentrancyGuardUpgradeable
 {
-    /// @dev AccessControl Pauser Role
-    bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    /// @dev AccessControl Manager Role
-    bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
-    /// @dev AccessControl Upgrader Role
-    bytes32 internal constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    /// @dev ETH amount released so far
-    uint256 private _released;
-    /// @dev start timestamp
-    uint64 private _start;
-    /// @dev duration seconds
-    uint64 private _duration;
-    /// @dev UUPS version
-    uint32 public version;
-    /// @dev token amounts released so far
-    mapping(address token => uint256) private _erc20Released;
-    /// @dev upgrade gap
-    uint256[50] private __gap;
+    using Address for address payable;
+    using SafeERC20 for IERC20;
 
+    // ============ Constants ============
+
+    /**
+     * @dev Role identifier for accounts that can release funds
+     */
+    bytes32 public constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+
+    /**
+     * @dev Role identifier for accounts that can pause/unpause the contract
+     */
+    bytes32 public constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+
+    /**
+     * @dev Role identifier for accounts that can upgrade the contract
+     */
+    bytes32 public constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+
+    /**
+     * @dev Upgrade timelock duration in seconds (3 days)
+     */
+    uint256 private constant UPGRADE_TIMELOCK_DURATION = 3 days;
+
+    // ============ State Variables ============
+
+    /**
+     * @dev Current version of the contract implementation
+     * Incremented during upgrades
+     */
+    uint32 private _version;
+
+    /**
+     * @dev Start timestamp of the vesting schedule
+     */
+    uint256 private _start;
+
+    /**
+     * @dev Duration of the vesting period in seconds
+     */
+    uint256 private _duration;
+
+    /**
+     * @dev Total amount of ETH already released
+     */
+    uint256 private _released;
+
+    /**
+     * @dev Timelock controller address
+     */
+    address private _timelockAddress;
+
+    /**
+     * @dev Mapping of token address to amount released for each token
+     */
+    mapping(address => uint256) private _erc20Released;
+
+    /**
+     * @dev Pending upgrade information
+     */
+    UpgradeRequest public pendingUpgrade;
+
+    /**
+     * @dev Reserved storage space for future upgrades
+     * This allows adding new state variables in future versions while maintaining
+     * the storage layout (30 - 7 = 23)
+     */
+    uint256[23] private __gap;
+
+    // ============ Modifiers ============
+
+    /**
+     * @dev Modifier to check for non-zero address
+     * @param addr The address to check
+     */
+    modifier nonZeroAddress(address addr) {
+        if (addr == address(0)) revert ZeroAddressError();
+        _;
+    }
+
+    /**
+     * @dev Modifier to check for non-zero amount
+     * @param amount The amount to check
+     */
+    modifier nonZeroAmount(uint256 amount) {
+        if (amount == 0) revert ZeroAmountError();
+        _;
+    }
+
+    // ============ Constructor & Initializer ============
+
+    /**
+     * @dev Prevents initialization of the implementation contract
+     */
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
 
-    /// @notice solidity receive function
+    /**
+     * @dev Allows the contract to receive ETH
+     * @dev Emits a {Received} event
+     */
     receive() external payable virtual {
         emit Received(msg.sender, msg.value);
     }
 
     /**
-     * @dev Initializes the UUPS contract
-     * @param guardian admin address
-     * @param timelock address of timelock contract
+     * @notice Initializes the treasury contract
+     * @dev Sets up the initial state of the contract
+     * @param guardian The address that will have the PAUSER_ROLE
+     * @param timelock The address that will have the DEFAULT_ADMIN_ROLE and MANAGER_ROLE
+     * @param multisig The address of the Gnosis Safe multisig that will be granted the UPGRADER_ROLE
+     * @param startOffset The number of seconds the start time is before the current block timestamp
+     * @param vestingDuration The duration of vesting in seconds (must be at least 730 days)
      */
-    function initialize(address guardian, address timelock) external initializer {
-        // Initialize upgradeable contracts
+    function initialize(
+        address guardian,
+        address timelock,
+        address multisig,
+        uint256 startOffset,
+        uint256 vestingDuration
+    ) external initializer nonZeroAddress(guardian) nonZeroAddress(timelock) nonZeroAddress(multisig) {
+        if (vestingDuration < 730 days) revert InvalidDuration(730 days);
+
+        // Initialize inherited contracts
+        __UUPSUpgradeable_init();
         __Pausable_init();
         __AccessControl_init();
-        __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
 
-        // Set up roles
-        _grantRole(DEFAULT_ADMIN_ROLE, guardian);
+        // Set roles
+        _grantRole(DEFAULT_ADMIN_ROLE, timelock);
         _grantRole(MANAGER_ROLE, timelock);
+        _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(UPGRADER_ROLE, multisig); // Grant upgrade role to multisig
 
-        // Set up vesting schedule
-        // 180 days before current time as start
-        _start = SafeCast.toUint64(block.timestamp - 180 days);
-        // 3 years (1095 days) duration
-        _duration = SafeCast.toUint64(1095 days);
+        _start = block.timestamp - startOffset;
+        _duration = vestingDuration;
+        _timelockAddress = timelock;
+        _version = 1;
 
-        // Increment version and emit event
-        version = 1;
-        emit Initialized(msg.sender);
+        emit Initialized(msg.sender, _start, _duration);
     }
 
+    // ============ External Functions ============
+
     /**
-     * @dev Pauses all token transfers and releases.
-     * @notice Emergency function to pause contract operations
-     * @custom:requires-role PAUSER_ROLE
-     * @custom:events-emits {Paused} from PausableUpgradeable
+     * @notice Pauses all token transfers and releases
+     * @dev Can only be called by accounts with the PAUSER_ROLE
      */
-    function pause() external onlyRole(PAUSER_ROLE) {
+    function pause() external override onlyRole(PAUSER_ROLE) {
         _pause();
     }
 
     /**
-     * @dev Unpauses token transfers and releases.
-     * @notice Resumes normal contract operations after pause
-     * @custom:requires-role PAUSER_ROLE
-     * @custom:events-emits {Unpaused} from PausableUpgradeable
+     * @notice Unpauses token transfers and releases
+     * @dev Can only be called by accounts with the PAUSER_ROLE
      */
-    function unpause() external onlyRole(PAUSER_ROLE) {
+    function unpause() external override onlyRole(PAUSER_ROLE) {
         _unpause();
     }
 
     /**
-     * @dev Release the native token (ether) that have already vested.
-     * @notice Allows the manager to release vested ETH to a beneficiary
-     * @param to The address that will receive the vested ETH
+     * @notice Releases a specific amount of vested ETH
+     * @dev Can only be called by accounts with the MANAGER_ROLE
+     * @dev Reverts if the requested amount exceeds vested amount
+     * @param to The address that will receive the ETH
      * @param amount The amount of ETH to release
-     * @custom:requires-role MANAGER_ROLE
-     * @custom:requires Contract must not be paused
-     * @custom:requires Amount must not exceed vested amount
-     * @custom:requires Beneficiary address must not be zero
-     * @custom:security non-reentrant
-     * @custom:access restricted to MANAGER_ROLE
-     * @custom:events-emits {EtherReleased}
      */
-    function release(address to, uint256 amount) external nonReentrant whenNotPaused onlyRole(MANAGER_ROLE) {
+    function release(address to, uint256 amount)
+        external
+        override
+        nonReentrant
+        whenNotPaused
+        onlyRole(MANAGER_ROLE)
+        nonZeroAddress(to)
+        nonZeroAmount(amount)
+    {
         uint256 vested = releasable();
-        if (to == address(0)) revert CustomError({msg: "ZERO_ADDRESS"});
-        if (amount > vested) revert CustomError({msg: "NOT_ENOUGH_VESTED"});
+        if (amount > vested) revert InsufficientVestedAmount(amount, vested);
+
         _released += amount;
-        emit EtherReleased(to, amount);
-        Address.sendValue(payable(to), amount);
+        emit EthReleased(to, amount, vested - amount);
+
+        payable(to).sendValue(amount);
     }
 
     /**
-     * @dev Release the ERC20 tokens that have already vested.
-     * @notice Allows the manager to release vested tokens to a beneficiary
-     * @param token The address of the ERC20 token to release
-     * @param to The address that will receive the vested tokens
+     * @notice Releases a specific amount of vested tokens
+     * @dev Can only be called by accounts with the MANAGER_ROLE
+     * @dev Reverts if the requested amount exceeds vested amount
+     * @param token The ERC20 token to release
+     * @param to The address that will receive the tokens
      * @param amount The amount of tokens to release
-     * @custom:requires-role MANAGER_ROLE
-     * @custom:requires Contract must not be paused
-     * @custom:requires Amount must not exceed vested amount
-     * @custom:requires Token address must not be zero
-     * @custom:requires Beneficiary address must not be zero
-     * @custom:access restricted to MANAGER_ROLE
-     * @custom:events-emits {ERC20Released}
      */
-    function release(address token, address to, uint256 amount) external whenNotPaused onlyRole(MANAGER_ROLE) {
+    function release(address token, address to, uint256 amount)
+        external
+        override
+        nonReentrant
+        whenNotPaused
+        onlyRole(MANAGER_ROLE)
+        nonZeroAddress(token)
+        nonZeroAddress(to)
+        nonZeroAmount(amount)
+    {
         uint256 vested = releasable(token);
-        if (to == address(0)) revert CustomError({msg: "ZERO_ADDRESS"});
-        if (amount > vested) revert CustomError({msg: "NOT_ENOUGH_VESTED"});
+        if (amount > vested) revert InsufficientVestedAmount(amount, vested);
+
         _erc20Released[token] += amount;
-        emit ERC20Released(token, to, amount);
-        SafeERC20.safeTransfer(IERC20(token), to, amount);
+        emit TokenReleased(token, to, amount);
+
+        IERC20(token).safeTransfer(to, amount);
     }
 
     /**
-     * @dev Getter for the start timestamp.
-     * @return start timestamp
+     * @notice Updates the vesting schedule parameters
+     * @dev Can only be called by accounts with the DEFAULT_ADMIN_ROLE
+     * @param newStart The new start timestamp
+     * @param newDuration The new duration in seconds
      */
-    function start() public view virtual returns (uint256) {
+    function updateVestingSchedule(uint256 newStart, uint256 newDuration)
+        external
+        override
+        nonReentrant
+        onlyRole(DEFAULT_ADMIN_ROLE)
+    {
+        if (newDuration == 0) revert InvalidDuration(0);
+
+        _start = newStart;
+        _duration = newDuration;
+
+        emit VestingScheduleUpdated(msg.sender, newStart, newDuration);
+    }
+
+    /**
+     * @notice Withdraws funds in case of emergency
+     * @dev Can only be called by accounts with the DEFAULT_ADMIN_ROLE
+     * @dev Always sends funds to the timelock address for security
+     * @param token Address of the token to withdraw (address(0) for ETH)
+     * @param amount Amount to withdraw
+     */
+    function emergencyWithdraw(address token, uint256 amount)
+        external
+        nonReentrant
+        onlyRole(MANAGER_ROLE)
+        nonZeroAddress(token)
+        nonZeroAmount(amount)
+    {
+        if (token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
+            // ETH withdrawal
+            if (address(this).balance < amount) {
+                revert InsufficientBalance(amount, address(this).balance);
+            }
+            payable(_timelockAddress).sendValue(amount);
+        } else {
+            // ERC20 token withdrawal
+            uint256 balance = IERC20(token).balanceOf(address(this));
+            if (balance < amount) {
+                revert InsufficientBalance(amount, balance);
+            }
+            IERC20(token).safeTransfer(_timelockAddress, amount);
+        }
+
+        emit EmergencyWithdrawal(token, _timelockAddress, amount);
+    }
+
+    /**
+     * @dev Schedules an upgrade to a new implementation
+     * @param newImplementation Address of the new implementation
+     */
+    function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) {
+        if (newImplementation == address(0)) revert ZeroAddressError();
+
+        uint64 currentTime = uint64(block.timestamp);
+        uint64 effectiveTime = currentTime + uint64(UPGRADE_TIMELOCK_DURATION);
+
+        pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
+
+        emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @dev Returns the remaining time before a scheduled upgrade can be executed
+     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     */
+    function upgradeTimelockRemaining() external view returns (uint256) {
+        if (!pendingUpgrade.exists) return 0;
+
+        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
+        if (block.timestamp >= deadline) return 0;
+
+        return deadline - block.timestamp;
+    }
+
+    /**
+     * @dev Get the timelock controller address
+     * @return The timelock controller address
+     */
+    function timelockAddress() external view returns (address) {
+        return _timelockAddress;
+    }
+
+    // ============ Public View Functions ============
+
+    /**
+     * @notice Returns the amount of ETH that can be released now
+     * @return Amount of releasable ETH
+     */
+    function releasable() public view virtual override returns (uint256) {
+        return vestedAmount(uint256(block.timestamp)) - _released;
+    }
+
+    /**
+     * @notice Returns the amount of a specific token that can be released now
+     * @param token The ERC20 token to check
+     * @return Amount of releasable tokens
+     */
+    function releasable(address token) public view virtual override returns (uint256) {
+        return vestedAmount(token, uint256(block.timestamp)) - _erc20Released[token];
+    }
+
+    /**
+     * @notice Calculates the amount of ETH vested at a specific timestamp
+     * @param timestamp The timestamp to check
+     * @return The vested amount of ETH
+     */
+    function vestedAmount(uint256 timestamp) public view virtual override returns (uint256) {
+        return _vestingSchedule(address(this).balance + _released, timestamp);
+    }
+
+    /**
+     * @notice Calculates the amount of tokens vested at a specific timestamp
+     * @param token The ERC20 token to check
+     * @param timestamp The timestamp to check
+     * @return The vested amount of tokens
+     */
+    function vestedAmount(address token, uint256 timestamp) public view virtual override returns (uint256) {
+        uint256 totalAllocation = IERC20(token).balanceOf(address(this)) + _erc20Released[token];
+        return _vestingSchedule(totalAllocation, timestamp);
+    }
+
+    /**
+     * @notice Returns the current contract version
+     * @return Current version number
+     */
+    function version() public view virtual override returns (uint32) {
+        return _version;
+    }
+
+    /**
+     * @notice Returns the start timestamp of the vesting period
+     * @return Start timestamp
+     */
+    function start() public view virtual override returns (uint256) {
         return _start;
     }
 
     /**
-     * @dev Getter for the vesting duration.
-     * @return duration seconds
+     * @notice Returns the duration of the vesting period
+     * @return Duration in seconds
      */
-    function duration() public view virtual returns (uint256) {
+    function duration() public view virtual override returns (uint256) {
         return _duration;
     }
 
     /**
-     * @dev Getter for the end timestamp.
-     * @return end timnestamp
+     * @notice Returns the end timestamp of the vesting period
+     * @return End timestamp (start + duration)
      */
-    function end() public view virtual returns (uint256) {
+    function end() public view virtual override returns (uint256) {
         return start() + duration();
     }
 
     /**
-     * @dev Getter for the amount of eth already released
-     * @return amount of ETH released so far
+     * @notice Returns the amount of ETH already released
+     * @return Amount of ETH released so far
      */
-    function released() public view virtual returns (uint256) {
+    function released() public view virtual override returns (uint256) {
         return _released;
     }
 
     /**
-     * @dev Getter for the amount of token already released
-     * @param token address
-     * @return amount of tokens released so far
+     * @notice Returns the amount of a specific token already released
+     * @param token The ERC20 token to check
+     * @return Amount of tokens released so far
      */
-    function released(address token) public view virtual returns (uint256) {
+    function released(address token) public view virtual override returns (uint256) {
         return _erc20Released[token];
     }
 
-    /**
-     * @dev Getter for the amount of releasable eth.
-     * @return amount of vested ETH
-     */
-    function releasable() public view virtual returns (uint256) {
-        return vestedAmount(SafeCast.toUint64(block.timestamp)) - released();
-    }
+    // ============ Internal Functions ============
 
     /**
-     * @dev Getter for the amount of vested `ERC20` tokens.
-     * @param token address
-     * @return amount of vested tokens
+     * @dev Internal function to calculate vested amounts for a given allocation and timestamp
+     * @dev Uses linear vesting between start and end time
+     * @param totalAllocation The total amount to vest
+     * @param timestamp The timestamp to check
+     * @return The amount vested at the specified timestamp
      */
-    function releasable(address token) public view virtual returns (uint256) {
-        return vestedAmount(token, SafeCast.toUint64(block.timestamp)) - released(token);
-    }
-
-    /// @inheritdoc UUPSUpgradeable
-    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
-        ++version;
-        emit Upgrade(msg.sender, newImplementation);
-    }
-
-    /**
-     * @dev Calculates the amount of ETH that has already vested. Default implementation is a linear vesting curve.
-     * @param timestamp current timestamp
-     * @return amount ETH vested
-     */
-    function vestedAmount(uint64 timestamp) internal view virtual returns (uint256) {
-        return _vestingSchedule(address(this).balance + released(), timestamp);
-    }
-
-    /**
-     * @dev Calculates the amount of tokens that has already vested. Default implementation is a linear vesting curve.
-     * @param token address of token
-     * @param timestamp current timestamp
-     * @return amount vested
-     */
-    function vestedAmount(address token, uint64 timestamp) internal view virtual returns (uint256) {
-        return _vestingSchedule(IERC20(token).balanceOf(address(this)) + released(token), timestamp);
-    }
-
-    /**
-     * @dev Virtual implementation of the vesting formula. This returns the amount vested, as a function of time, for
-     * an asset given its total historical allocation.
-     * @param totalAllocation initial amount
-     * @param timestamp current timestamp
-     * @return amount vested
-     */
-    function _vestingSchedule(uint256 totalAllocation, uint64 timestamp) internal view virtual returns (uint256) {
-        if (timestamp < start()) {
+    function _vestingSchedule(uint256 totalAllocation, uint256 timestamp) internal view virtual returns (uint256) {
+        if (timestamp < _start) {
             return 0;
-        } else if (timestamp >= end()) {
+        } else if (timestamp >= _start + _duration) {
             return totalAllocation;
+        } else {
+            return (totalAllocation * (timestamp - _start)) / _duration;
         }
-        return (totalAllocation * (timestamp - start())) / duration();
+    }
+
+    /**
+     * @notice Authorizes and processes contract upgrades with timelock enforcement
+     * @dev Internal override for UUPS upgrade authorization
+     * @param newImplementation Address of the new implementation contract
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+
+        if (pendingUpgrade.implementation != newImplementation) {
+            revert ImplementationMismatch(pendingUpgrade.implementation, newImplementation);
+        }
+
+        uint256 timeElapsed = block.timestamp - pendingUpgrade.scheduledTime;
+        if (timeElapsed < UPGRADE_TIMELOCK_DURATION) {
+            revert UpgradeTimelockActive(UPGRADE_TIMELOCK_DURATION - timeElapsed);
+        }
+
+        // Clear the scheduled upgrade
+        delete pendingUpgrade;
+
+        // Increment version
+        ++_version;
+
+        // Emit the upgrade event
+        emit Upgraded(msg.sender, newImplementation, _version);
     }
 }
