@@ -42,6 +42,7 @@ contract InvestmentManagerTest is BasicDeploy {
     event RoundFinalized(
         address indexed caller, uint32 indexed roundId, uint256 totalEthRaised, uint256 totalTokensDistributed
     );
+    event EmergencyWithdrawal(address indexed token, uint256 amount);
 
     receive() external payable {
         if (msg.sender == address(manager)) {
@@ -2851,7 +2852,7 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(address(0x123).balance, 50 ether);
     }
 
-    function testClaimRefundInvalidParameters() public {
+    function test_ClaimRefundInvalidParameters() public {
         uint32 roundId = _createTestRound(uint64(block.timestamp + 1 days), 7 days, 100 ether, 1000e18);
 
         // Test invalid round status (not CANCELLED)
@@ -2865,6 +2866,150 @@ contract InvestmentManagerTest is BasicDeploy {
         vm.prank(address(0x123));
         vm.expectRevert(abi.encodeWithSelector(IINVMANAGER.NoRefundAvailable.selector, address(0x123)));
         manager.claimRefund(roundId);
+    }
+
+    // ============ Emergency Withdrawal Tests ============
+
+    function test_EmergencyWithdrawToken() public {
+        // Setup: Get some tokens into the manager contract first
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), 1000e18);
+        vm.stopPrank();
+
+        // Verify initial state
+        uint256 initialManagerBalance = tokenInstance.balanceOf(address(manager));
+        uint256 initialTimelockBalance = tokenInstance.balanceOf(address(timelockInstance));
+        assertGt(initialManagerBalance, 0, "Manager should have tokens");
+
+        // Expect event emission
+        vm.expectEmit(true, true, false, true);
+        emit EmergencyWithdrawal(address(tokenInstance), initialManagerBalance);
+
+        // Execute emergency withdrawal - use gnosisSafe instead of timelock
+        vm.prank(gnosisSafe); // Changed from address(timelockInstance)
+        manager.emergencyWithdrawToken(address(tokenInstance));
+
+        // Verify final state
+        assertEq(tokenInstance.balanceOf(address(manager)), 0, "Manager should have no tokens left");
+        assertEq(
+            tokenInstance.balanceOf(address(timelockInstance)),
+            initialTimelockBalance + initialManagerBalance,
+            "Timelock should have received all tokens"
+        );
+    }
+
+    function test_EmergencyWithdrawEther() public {
+        // Setup: Get some ETH into the manager contract
+        uint32 roundId = _setupActiveRound();
+        vm.prank(gnosisSafe);
+        manager.addInvestorAllocation(roundId, alice, 10 ether, 100e18);
+
+        // Make investment
+        vm.deal(alice, 10 ether);
+        vm.prank(alice);
+        manager.investEther{value: 10 ether}(roundId);
+
+        // Verify initial state
+        uint256 initialManagerBalance = address(manager).balance;
+        uint256 initialTimelockBalance = address(timelockInstance).balance;
+        assertEq(initialManagerBalance, 10 ether, "Manager should have ETH");
+
+        // Expect event emission
+        vm.expectEmit(true, true, false, true);
+        emit EmergencyWithdrawal(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE, initialManagerBalance);
+
+        // Execute emergency withdrawal - use gnosisSafe
+        vm.prank(gnosisSafe); // Changed from address(timelockInstance)
+        manager.emergencyWithdrawEther();
+
+        // Verify final state
+        assertEq(address(manager).balance, 0, "Manager should have no ETH left");
+        assertEq(
+            address(timelockInstance).balance,
+            initialTimelockBalance + initialManagerBalance,
+            "Timelock should have received all ETH"
+        );
+    }
+
+    function testRevert_EmergencyWithdrawTokenUnauthorized() public {
+        vm.prank(alice);
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, MANAGER_ROLE);
+        vm.expectRevert(expError);
+        manager.emergencyWithdrawToken(address(tokenInstance));
+    }
+
+    function testRevert_EmergencyWithdrawEtherUnauthorized() public {
+        vm.prank(alice);
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, MANAGER_ROLE);
+        vm.expectRevert(expError);
+        manager.emergencyWithdrawEther();
+    }
+
+    function testRevert_EmergencyWithdrawTokenZeroAddress() public {
+        vm.prank(gnosisSafe); // Changed from address(timelockInstance)
+        bytes memory expError = abi.encodeWithSelector(IINVMANAGER.ZeroAddressDetected.selector);
+        vm.expectRevert(expError);
+        manager.emergencyWithdrawToken(address(0));
+    }
+
+    function testRevert_EmergencyWithdrawTokenZeroBalance() public {
+        // Ensure manager has no balance of this token
+        assertEq(tokenInstance.balanceOf(address(manager)), 0);
+
+        vm.prank(gnosisSafe); // Changed from address(timelockInstance)
+        vm.expectRevert(abi.encodeWithSelector(IINVMANAGER.ZeroBalance.selector));
+        manager.emergencyWithdrawToken(address(tokenInstance));
+    }
+
+    function testRevert_EmergencyWithdrawEtherZeroBalance() public {
+        // Ensure manager has no ETH balance
+        assertEq(address(manager).balance, 0);
+
+        vm.prank(gnosisSafe); // Changed from address(timelockInstance)
+        vm.expectRevert(abi.encodeWithSelector(IINVMANAGER.ZeroBalance.selector));
+        manager.emergencyWithdrawEther();
+    }
+
+    function test_EmergencyWithdrawsWhenPaused() public {
+        // Setup: Get some tokens and ETH into the manager contract
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.release(address(tokenInstance), address(manager), 1000e18);
+        vm.stopPrank();
+
+        // Add ETH through investment
+        uint32 roundId = _setupActiveRound();
+        vm.prank(gnosisSafe);
+        manager.addInvestorAllocation(roundId, alice, 10 ether, 100e18);
+
+        vm.deal(alice, 10 ether);
+        vm.prank(alice);
+        manager.investEther{value: 10 ether}(roundId);
+
+        // Pause the contract
+        vm.prank(guardian);
+        manager.pause();
+
+        // Verify emergency withdrawals still work when paused
+        vm.startPrank(gnosisSafe); // Changed from address(timelockInstance)
+
+        // 1. Withdraw tokens
+        manager.emergencyWithdrawToken(address(tokenInstance));
+        assertEq(tokenInstance.balanceOf(address(manager)), 0);
+
+        // 2. Withdraw ETH
+        manager.emergencyWithdrawEther();
+        assertEq(address(manager).balance, 0);
+
+        vm.stopPrank();
+    }
+
+    // Helper function to simulate checking if method has nonReentrant modifier (for demonstration)
+    function getMethodSignature(string memory _method) public pure returns (string memory) {
+        // This is just a placeholder - in reality we can't easily check for modifiers this way
+        // This would require analysis of the contract bytecode
+        return string(abi.encodePacked("nonReentrant ", _method));
     }
 
     function _setupToken() private {
