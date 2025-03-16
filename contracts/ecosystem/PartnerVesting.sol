@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.23;
+/**
+ * @title PartnerVesting Contract
+ * @author alexei@nebula-labs(dot)xyz
+ * @notice Manages linear token vesting for Lendefi partners
+ * @dev Implements a time-based linear vesting schedule with partner control and DAO cancellation capability
+ * @custom:security-contact security@nebula-labs.xyz
+ */
 
 import {IPARTNERVESTING} from "../interfaces/IPartnerVesting.sol";
 import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
@@ -9,21 +16,26 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGuard {
-    /// @dev start timestamp
+    using SafeERC20 for IERC20;
+
+    /// @dev Start timestamp of the vesting period
     uint64 private immutable _start;
-    /// @dev duration seconds
+
+    /// @dev Duration of the vesting period in seconds
     uint64 private immutable _duration;
-    /// @dev token address
+
+    /// @dev Address of the token being vested
     address private immutable _token;
-    /// @dev timelock address
-    address public immutable _timelock;
-    /// @dev creator address (Ecosystem)
+
+    /// @dev Address that created this contract (Ecosystem contract)
     address public immutable _creator;
-    /// @dev amount of tokens released
+
+    /// @dev Running total of tokens that have been released
     uint256 private _tokensReleased;
 
     /**
-     * @dev Throws if called by any account other than the timelock or creator.
+     * @notice Restricts function access to the contract creator only
+     * @dev Used for cancellation functionality
      */
     modifier onlyAuthorized() {
         _checkAuthorized();
@@ -31,31 +43,32 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
     }
 
     /**
-     * @dev Sets the owner to partner address (beneficiary), the start timestamp and the
-     * vesting duration of the vesting contract.
+     * @notice Creates a new vesting contract for a partner
+     * @dev Sets the beneficiary as the owner, initializes immutable vesting parameters
+     * @param token Address of the ERC20 token to be vested
+     * @param beneficiary Address that will receive the vested tokens
+     * @param startTimestamp UNIX timestamp when vesting begins
+     * @param durationSeconds Duration of vesting period in seconds
      */
-    constructor(address token, address timelock, address beneficiary, uint64 startTimestamp, uint64 durationSeconds)
+    constructor(address token, address beneficiary, uint64 startTimestamp, uint64 durationSeconds)
         Ownable(beneficiary)
     {
-        if (token == address(0) || timelock == address(0) || beneficiary == address(0)) {
+        if (token == address(0) || beneficiary == address(0)) {
             revert ZeroAddress();
         }
 
         _token = token;
-        _timelock = timelock;
         _creator = msg.sender; // Store the creator (Ecosystem contract)
         _start = startTimestamp;
         _duration = durationSeconds;
 
-        emit VestingInitialized(token, beneficiary, timelock, startTimestamp, durationSeconds);
+        emit VestingInitialized(token, beneficiary, startTimestamp, durationSeconds);
     }
 
     /**
-     * @dev Allows the DAO to cancel the contract in case the partnership ends.
-     * First releases any vested tokens to the beneficiary, then returns
-     * the remaining unvested tokens to the creator (Ecosystem contract).
+     * @notice Cancels the vesting contract, releasing vested tokens and returning unvested tokens
+     * @dev First releases any vested tokens to the beneficiary, then returns remaining tokens to creator
      * @return remainder The amount of tokens returned to the creator
-     * Can only be called by the creator (Ecosystem contract).
      */
     function cancelContract() external nonReentrant onlyAuthorized returns (uint256 remainder) {
         IERC20 tokenInstance = IERC20(_token);
@@ -65,7 +78,7 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
         if (releasableAmount > 0) {
             _tokensReleased += releasableAmount;
             emit ERC20Released(_token, releasableAmount);
-            SafeERC20.safeTransfer(tokenInstance, owner(), releasableAmount);
+            tokenInstance.safeTransfer(owner(), releasableAmount);
         }
 
         // Get current balance
@@ -74,44 +87,80 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
         // Only emit event and transfer if there are tokens to transfer
         if (remainder > 0) {
             emit Cancelled(remainder);
-            SafeERC20.safeTransfer(tokenInstance, _creator, remainder);
+            tokenInstance.safeTransfer(_creator, remainder);
         }
     }
 
-    // Rest of the contract remains the same...
+    /**
+     * @notice Releases vested tokens to the beneficiary
+     * @dev Can be called by anyone but tokens are always sent to the owner (beneficiary)
+     */
     function release() public virtual nonReentrant {
         uint256 amount = releasable();
         if (amount == 0) return;
 
         _tokensReleased += amount;
         emit ERC20Released(_token, amount);
-        SafeERC20.safeTransfer(IERC20(_token), owner(), amount);
+        IERC20(_token).safeTransfer(owner(), amount);
     }
 
+    /**
+     * @notice Returns the timestamp when vesting starts
+     * @return The start timestamp of the vesting period
+     */
     function start() public view virtual returns (uint256) {
         return _start;
     }
 
+    /**
+     * @notice Returns the duration of the vesting period
+     * @return The duration in seconds of the vesting period
+     */
     function duration() public view virtual returns (uint256) {
         return _duration;
     }
 
+    /**
+     * @notice Returns the timestamp when vesting ends
+     * @return The end timestamp of the vesting period
+     */
     function end() public view virtual returns (uint256) {
         return start() + duration();
     }
 
+    /**
+     * @notice Returns the amount of tokens already released
+     * @return The amount of tokens that have been released so far
+     */
     function released() public view virtual returns (uint256) {
         return _tokensReleased;
     }
 
+    /**
+     * @notice Calculates the amount of tokens that can be released now
+     * @return The amount of tokens currently available to be released
+     */
     function releasable() public view virtual returns (uint256) {
         return vestedAmount(uint64(block.timestamp)) - released();
     }
 
+    /**
+     * @notice Calculates the amount of tokens that have vested by a given timestamp
+     * @dev Internal function used by releasable()
+     * @param timestamp The timestamp to calculate vested amount for
+     * @return The total amount of tokens vested at the specified timestamp
+     */
     function vestedAmount(uint64 timestamp) internal view virtual returns (uint256) {
         return _vestingSchedule(IERC20(_token).balanceOf(address(this)) + released(), timestamp);
     }
 
+    /**
+     * @notice Calculates vested tokens according to the linear vesting schedule
+     * @dev Implements the core vesting calculation logic
+     * @param totalAllocation Total token allocation (current balance + already released)
+     * @param timestamp The timestamp to calculate vested amount for
+     * @return The amount of tokens vested at the specified timestamp
+     */
     function _vestingSchedule(uint256 totalAllocation, uint64 timestamp) internal view virtual returns (uint256) {
         if (timestamp < start()) {
             return 0;
@@ -122,7 +171,8 @@ contract PartnerVesting is IPARTNERVESTING, Context, Ownable2Step, ReentrancyGua
     }
 
     /**
-     * @dev Throws if the sender is not authorized to cancel.
+     * @notice Verifies the caller is authorized to perform creator-only actions
+     * @dev Throws Unauthorized error if caller is not the creator
      */
     function _checkAuthorized() internal view virtual {
         if (_creator != _msgSender()) {
