@@ -25,12 +25,12 @@ interface ITREASURY {
     /**
      * @dev Thrown when an operation receives the zero address where a non-zero address is required
      */
-    error ZeroAddressError();
+    error ZeroAddress();
 
     /**
      * @dev Thrown when an operation receives a zero amount where a non-zero amount is required
      */
-    error ZeroAmountError();
+    error ZeroAmount();
 
     /**
      * @dev Thrown when trying to release more funds than what's currently vested
@@ -64,11 +64,9 @@ interface ITREASURY {
     error ImplementationMismatch(address expected, address provided);
 
     /**
-     * @dev Error thrown when balance is insufficient
-     * @param requested Requested amount
-     * @param available Available amount
+     * @dev Error thrown when attempting operations with zero balance
      */
-    error InsufficientBalance(uint256 requested, uint256 available);
+    error ZeroBalance();
     /* ========== EVENTS ========== */
 
     /**
@@ -193,11 +191,15 @@ interface ITREASURY {
      * @notice Withdraws funds in case of emergency
      * @dev Can only be called by accounts with the MANAGER_ROLE
      * @dev Always sends funds to the timelock controller
-     * @param token Address of the token to withdraw (address(0) for ETH)
-     * @param amount Amount to withdraw
+     * @param token Address of the token to withdraw
      */
-    function emergencyWithdraw(address token, uint256 amount) external;
-
+    function emergencyWithdrawToken(address token) external;
+    /**
+     * @notice Withdraws funds in case of emergency
+     * @dev Can only be called by accounts with the MANAGER_ROLE
+     * @dev Always sends funds to the timelock controller
+     */
+    function emergencyWithdrawEther() external;
     /**
      * @notice Schedules an upgrade to a new implementation
      * @dev Can only be called by accounts with the UPGRADER_ROLE
