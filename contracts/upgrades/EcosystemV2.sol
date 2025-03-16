@@ -134,15 +134,14 @@ contract EcosystemV2 is
      * @custom:throws ZeroAddressDetected if any of the input addresses are zero.
      */
     function initialize(address token, address timelockAddr, address guardian, address multisig) external initializer {
-        __Pausable_init();
-        __AccessControl_init();
-        __UUPSUpgradeable_init();
-        __ReentrancyGuard_init();
-
         if (token == address(0) || timelockAddr == address(0) || guardian == address(0) || multisig == address(0)) {
             revert ZeroAddressDetected();
         }
 
+        __Pausable_init();
+        __AccessControl_init();
+        __UUPSUpgradeable_init();
+        __ReentrancyGuard_init();
         // Set up roles
         _grantRole(DEFAULT_ADMIN_ROLE, timelockAddr);
         _grantRole(MANAGER_ROLE, timelockAddr);
@@ -219,30 +218,25 @@ contract EcosystemV2 is
      * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
      */
     function upgradeTimelockRemaining() external view returns (uint256) {
-        if (!pendingUpgrade.exists) return 0;
-
-        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
-        if (block.timestamp >= deadline) return 0;
-
-        return deadline - block.timestamp;
+        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
+            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
+            : 0;
     }
 
     /**
-     * @dev Emergency function to withdraw tokens to the timelock
-     * @param token The token to withdraw (use tokenInstance address for LENDEFI tokens)
-     * @param amount The amount to withdraw
+     * @dev Emergency function to withdraw all tokens to the timelock
+     * @param token The ERC20 token to withdraw
      * @notice Only callable by addresses with MANAGER_ROLE
-     * @notice Always sends tokens to the timelock controller
+     * @notice Always sends all available tokens to the timelock controller
+     * @custom:throws ZeroAddress if token address is zero
+     * @custom:throws ZeroBalance if contract has no token balance
      */
-    function emergencyWithdraw(address token, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(MANAGER_ROLE)
-        nonZeroAddress(token)
-        nonZeroAmount(amount)
-    {
-        IERC20(token).safeTransfer(timelock, amount);
-        emit EmergencyWithdrawal(token, amount);
+    function emergencyWithdrawToken(address token) external nonReentrant onlyRole(MANAGER_ROLE) nonZeroAddress(token) {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance == 0) revert ZeroBalance();
+
+        IERC20(token).safeTransfer(timelock, balance);
+        emit EmergencyWithdrawal(token, balance);
     }
 
     // ============ Token Distribution Functions ============
