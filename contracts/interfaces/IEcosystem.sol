@@ -201,7 +201,10 @@ interface IECOSYSTEM {
      * @dev Thrown when attempting to set an invalid vesting duration
      */
     error InvalidVestingSchedule();
-
+    /**
+     * @dev Error thrown when attempting operations with zero balance
+     */
+    error ZeroBalance();
     // ============ Functions ============
 
     /**
@@ -244,9 +247,8 @@ interface IECOSYSTEM {
      * @notice Emergency function to withdraw tokens to the timelock
      * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param token The token to withdraw
-     * @param amount The amount to withdraw
      */
-    function emergencyWithdraw(address token, uint256 amount) external;
+    function emergencyWithdrawToken(address token) external;
 
     /**
      * @notice Distributes tokens to multiple recipients
