@@ -4,6 +4,7 @@ pragma solidity ^0.8.23;
 import {Test, Vm} from "forge-std/Test.sol";
 import {PartnerVesting} from "../../contracts/ecosystem/PartnerVesting.sol";
 import {TokenMock} from "../../contracts/mock/TokenMock.sol";
+import {IPARTNERVESTING} from "../../contracts/interfaces/IPartnerVesting.sol";
 
 contract PartnerVestingTest is Test {
     // Events
@@ -62,11 +63,11 @@ contract PartnerVestingTest is Test {
     // Test basic constructor validations
     function testRevertConstructorZeroAddresses() public {
         // Test zero token address
-        vm.expectRevert(PartnerVesting.ZeroAddress.selector);
+        vm.expectRevert(IPARTNERVESTING.ZeroAddress.selector);
         new PartnerVesting(address(0), timelock, partner, startTime, vestingDuration);
 
         // Test zero timelock address
-        vm.expectRevert(PartnerVesting.ZeroAddress.selector);
+        vm.expectRevert(IPARTNERVESTING.ZeroAddress.selector);
         new PartnerVesting(address(token), address(0), partner, startTime, vestingDuration);
 
         // Test zero partner address (owner)
@@ -159,11 +160,11 @@ contract PartnerVestingTest is Test {
     // Test revert on unauthorized cancellation
     function testRevertUnauthorizedCancel() public {
         vm.prank(alice);
-        vm.expectRevert(PartnerVesting.Unauthorized.selector);
+        vm.expectRevert(IPARTNERVESTING.Unauthorized.selector);
         vesting.cancelContract();
 
         vm.prank(partner);
-        vm.expectRevert(PartnerVesting.Unauthorized.selector);
+        vm.expectRevert(IPARTNERVESTING.Unauthorized.selector);
         vesting.cancelContract();
     }
 
@@ -388,7 +389,7 @@ contract PartnerVestingTest is Test {
     function testRevertTimelockCannotCancel() public {
         // Attempt to cancel as timelock (should fail)
         vm.prank(timelock);
-        vm.expectRevert(PartnerVesting.Unauthorized.selector);
+        vm.expectRevert(IPARTNERVESTING.Unauthorized.selector);
         vesting.cancelContract();
     }
 
