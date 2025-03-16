@@ -46,5 +46,8 @@
     "lint-staged": "^15.4.3",
     "solhint": "github:solhint-community/solhint-community#v4.0.0-rc01",
     "sort-package-json": "2.8.0"
+  },
+  "dependencies": {
+    "@openzeppelin/defender-deploy-client-cli": "^0.0.1-alpha.4"
   }
 }
