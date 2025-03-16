@@ -313,15 +313,12 @@ contract TreasuryV2 is
 
     /**
      * @dev Returns the remaining time before a scheduled upgrade can be executed
-     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     * @return timeRemaining The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
      */
     function upgradeTimelockRemaining() external view returns (uint256) {
-        if (!pendingUpgrade.exists) return 0;
-
-        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
-        if (block.timestamp >= deadline) return 0;
-
-        return deadline - block.timestamp;
+        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
+            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
+            : 0;
     }
 
     /**
