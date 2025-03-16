@@ -641,7 +641,7 @@ contract TreasuryTest is BasicDeploy {
         uint256 amount = 100 ether;
 
         vm.prank(address(timelockInstance));
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryInstance.release(address(tokenInstance), address(0), amount);
     }
 
@@ -649,7 +649,7 @@ contract TreasuryTest is BasicDeploy {
     function testReleaseToZeroAddress() public {
         _moveToVestingTime(100);
         vm.prank(address(timelockInstance));
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryInstance.release(address(0), 100 ether);
         assertEq(address(0).balance, 0);
     }
@@ -659,11 +659,11 @@ contract TreasuryTest is BasicDeploy {
         _moveToVestingTime(50);
 
         vm.prank(address(timelockInstance));
-        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        vm.expectRevert(ITREASURY.ZeroAmount.selector);
         treasuryInstance.release(beneficiary, 0);
 
         vm.prank(address(timelockInstance));
-        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        vm.expectRevert(ITREASURY.ZeroAmount.selector);
         treasuryInstance.release(address(tokenInstance), beneficiary, 0);
     }
 
@@ -769,7 +769,7 @@ contract TreasuryTest is BasicDeploy {
     // Test revert on zero address implementation
     function testRevert_ScheduleUpgradeZeroAddress() public {
         vm.prank(gnosisSafe);
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryInstance.scheduleUpgrade(address(0));
     }
 
@@ -780,39 +780,34 @@ contract TreasuryTest is BasicDeploy {
 
     // Test emergency withdrawal of ETH always goes to timelock
     function testEmergencyWithdrawETHToTimelock() public {
-        uint256 amount = 0.5 ether;
         uint256 initialBalance = address(timelockInstance).balance;
+        uint256 treasuryBalance = address(treasuryInstance).balance; // Get the actual balance
 
-        vm.prank(address(timelockInstance)); // Using timelock as it has MANAGER_ROLE
+        vm.prank(address(timelockInstance));
         vm.expectEmit(true, true, true, true);
-        emit EmergencyWithdrawal(ethereum, address(timelockInstance), amount);
-        treasuryInstance.emergencyWithdraw(ethereum, amount);
+        emit EmergencyWithdrawal(ethereum, address(timelockInstance), treasuryBalance); // Use actual balance
+        treasuryInstance.emergencyWithdrawEther();
 
-        assertEq(address(timelockInstance).balance, initialBalance + amount, "ETH should be sent to timelock");
+        assertEq(address(timelockInstance).balance, initialBalance + treasuryBalance, "ETH should be sent to timelock");
+        assertEq(address(treasuryInstance).balance, 0, "Treasury should have no ETH left");
     }
 
     // Test emergency withdrawal of tokens always goes to timelock
     function testEmergencyWithdrawTokensToTimelock() public {
         uint256 initialBalance = tokenInstance.balanceOf(address(timelockInstance));
-        uint256 amount = 1000 ether;
+        uint256 treasuryTokenBalance = tokenInstance.balanceOf(address(treasuryInstance)); // Get actual balance
 
-        vm.prank(address(timelockInstance)); // Using timelock as it has MANAGER_ROLE
+        vm.prank(address(timelockInstance));
         vm.expectEmit(true, true, true, true);
-        emit EmergencyWithdrawal(address(tokenInstance), address(timelockInstance), amount);
-        treasuryInstance.emergencyWithdraw(address(tokenInstance), amount);
+        emit EmergencyWithdrawal(address(tokenInstance), address(timelockInstance), treasuryTokenBalance); // Use actual balance
+        treasuryInstance.emergencyWithdrawToken(address(tokenInstance));
 
         assertEq(
             tokenInstance.balanceOf(address(timelockInstance)),
-            initialBalance + amount,
+            initialBalance + treasuryTokenBalance,
             "Tokens should be sent to timelock"
         );
-    }
-
-    // Test emergency withdrawal with zero amount
-    function testRevert_EmergencyWithdrawZeroAmount() public {
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
-        treasuryInstance.emergencyWithdraw(address(tokenInstance), 0);
+        assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 0, "Treasury should have no tokens left");
     }
 
     // Test timelock address getter
