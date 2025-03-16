@@ -17,36 +17,26 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
-    /// @dev start timestamp
+    using SafeERC20 for IERC20;
+
+    /// @dev Start timestamp of the vesting period
     uint64 private immutable _start;
-    /// @dev duration seconds
+
+    /// @dev Duration of the vesting period in seconds
     uint64 private immutable _duration;
-    /// @dev token address
+
+    /// @dev Address of the token being vested
     address private immutable _token;
-    /// @dev timelock address
+
+    /// @dev Address of the timelock controller that can cancel vesting
     address public immutable _timelock;
-    /// @dev amount of tokens released
+
+    /// @dev Running total of tokens that have been released
     uint256 private _tokensReleased;
 
     /**
-     * @dev Custom errors
-     */
-    error Unauthorized();
-    error ZeroAddress();
-
-    /**
-     * @dev Contract initialization event
-     */
-    event VestingInitialized(
-        address indexed token,
-        address indexed beneficiary,
-        address indexed timelock,
-        uint64 startTimestamp,
-        uint64 duration
-    );
-
-    /**
-     * @dev Throws if called by any account other than the timelock.
+     * @notice Restricts function access to the timelock controller only
+     * @dev Used for cancellation functionality
      */
     modifier onlyTimelock() {
         _checkTimelock();
@@ -54,8 +44,13 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
     }
 
     /**
-     * @dev Sets the owner to beneficiary address, the start timestamp and the
-     * vesting duration of the vesting contract.
+     * @notice Creates a new vesting contract for a team member
+     * @dev Sets the beneficiary as the owner, initializes immutable vesting parameters
+     * @param token Address of the ERC20 token to be vested
+     * @param timelock Address of the timelock controller
+     * @param beneficiary Address that will receive the vested tokens
+     * @param startTimestamp UNIX timestamp when vesting begins
+     * @param durationSeconds Duration of vesting period in seconds
      */
     constructor(address token, address timelock, address beneficiary, uint64 startTimestamp, uint64 durationSeconds)
         Ownable(beneficiary)
@@ -73,11 +68,9 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
     }
 
     /**
-     * @dev Allows the DAO to cancel the contract in case the team member leaves.
-     * @return remainder The amount of tokens returned to the creator
-     * First releases any vested tokens to the beneficiary, then returns
-     * the remaining unvested tokens to the timelock controller.
-     * Can be called multiple times but will only transfer the remaining balance.
+     * @notice Cancels the vesting contract, releasing vested tokens and returning unvested tokens
+     * @dev First releases any vested tokens to the beneficiary, then returns remaining tokens to timelock
+     * @return remainder The amount of unvested tokens returned to the timelock
      */
     function cancelContract() external nonReentrant onlyTimelock returns (uint256 remainder) {
         IERC20 tokenInstance = IERC20(_token);
@@ -87,7 +80,7 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
         if (releasableAmount > 0) {
             _tokensReleased += releasableAmount;
             emit ERC20Released(_token, releasableAmount);
-            SafeERC20.safeTransfer(tokenInstance, owner(), releasableAmount);
+            tokenInstance.safeTransfer(owner(), releasableAmount);
         }
 
         // Get current balance
@@ -96,13 +89,13 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
         // Only emit event and transfer if there are tokens to transfer
         if (remainder > 0) {
             emit Cancelled(remainder);
-            SafeERC20.safeTransfer(tokenInstance, _timelock, remainder);
+            tokenInstance.safeTransfer(_timelock, remainder);
         }
     }
 
     /**
-     * @dev Release the tokens that have already vested.
-     * Emits a {ERC20Released} event.
+     * @notice Releases vested tokens to the beneficiary
+     * @dev Can be called by anyone but tokens are always sent to the owner (beneficiary)
      */
     function release() public virtual nonReentrant {
         uint256 amount = releasable();
@@ -110,51 +103,57 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
 
         _tokensReleased += amount;
         emit ERC20Released(_token, amount);
-        SafeERC20.safeTransfer(IERC20(_token), owner(), amount);
+        IERC20(_token).safeTransfer(owner(), amount);
     }
 
     /**
-     * @dev Getter for the start timestamp.
-     * @return start timestamp
+     * @notice Returns the timestamp when vesting starts
+     * @dev This value is immutable and set during contract creation
+     * @return The start timestamp of the vesting period
      */
     function start() public view virtual returns (uint256) {
         return _start;
     }
 
     /**
-     * @dev Getter for the vesting duration.
-     * @return duration seconds
+     * @notice Returns the duration of the vesting period
+     * @dev This value is immutable and set during contract creation
+     * @return The duration in seconds of the vesting period
      */
     function duration() public view virtual returns (uint256) {
         return _duration;
     }
 
     /**
-     * @dev Getter for the end timestamp.
-     * @return end timestamp
+     * @notice Returns the timestamp when vesting ends
+     * @dev Calculated as start() + duration()
+     * @return The end timestamp of the vesting period
      */
     function end() public view virtual returns (uint256) {
         return start() + duration();
     }
 
     /**
-     * @dev Getter for the amount of token already released
-     * @return amount of tokens released so far
+     * @notice Returns the amount of tokens already released
+     * @dev Used in vesting calculations to determine how many more tokens can be released
+     * @return The amount of tokens that have been released so far
      */
     function released() public view virtual returns (uint256) {
         return _tokensReleased;
     }
 
     /**
-     * @dev Getter for the amount of releasable tokens.
-     * @return amount of vested tokens
+     * @notice Calculates the amount of tokens that can be released now
+     * @dev Subtracts already released tokens from the total vested amount
+     * @return The amount of tokens currently available to be released
      */
     function releasable() public view virtual returns (uint256) {
         return vestedAmount(uint64(block.timestamp)) - released();
     }
 
     /**
-     * @dev Throws if the sender is not the timelock.
+     * @notice Verifies the caller is the timelock controller
+     * @dev Throws Unauthorized error if caller is not the timelock
      */
     function _checkTimelock() internal view virtual {
         if (_timelock != _msgSender()) {
@@ -163,20 +162,21 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
     }
 
     /**
-     * @dev Calculates the amount of tokens that has already vested. Default implementation is a linear vesting curve.
-     * @param timestamp current timestamp
-     * @return amount vested
+     * @notice Calculates the amount of tokens that have vested by a given timestamp
+     * @dev Internal function used by releasable()
+     * @param timestamp The timestamp to calculate vested amount for
+     * @return The total amount of tokens vested at the specified timestamp
      */
     function vestedAmount(uint64 timestamp) internal view virtual returns (uint256) {
         return _vestingSchedule(IERC20(_token).balanceOf(address(this)) + released(), timestamp);
     }
 
     /**
-     * @dev Implementation of the vesting formula. This returns the amount vested, as a function of time, for
-     * an asset given its total historical allocation.
-     * @param totalAllocation initial amount
-     * @param timestamp current timestamp
-     * @return amount vested
+     * @notice Calculates vested tokens according to the linear vesting schedule
+     * @dev Implements the core vesting calculation logic
+     * @param totalAllocation Total token allocation (current balance + already released)
+     * @param timestamp The timestamp to calculate vested amount for
+     * @return The amount of tokens vested at the specified timestamp
      */
     function _vestingSchedule(uint256 totalAllocation, uint64 timestamp) internal view virtual returns (uint256) {
         if (timestamp < start()) {
