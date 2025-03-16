@@ -104,7 +104,7 @@ contract Treasury is
      * @param addr The address to check
      */
     modifier nonZeroAddress(address addr) {
-        if (addr == address(0)) revert ZeroAddressError();
+        if (addr == address(0)) revert ZeroAddress();
         _;
     }
 
@@ -113,7 +113,7 @@ contract Treasury is
      * @param amount The amount to check
      */
     modifier nonZeroAmount(uint256 amount) {
-        if (amount == 0) revert ZeroAmountError();
+        if (amount == 0) revert ZeroAmount();
         _;
     }
 
@@ -264,35 +264,31 @@ contract Treasury is
     }
 
     /**
-     * @notice Withdraws funds in case of emergency
-     * @dev Can only be called by accounts with the DEFAULT_ADMIN_ROLE
-     * @dev Always sends funds to the timelock address for security
-     * @param token Address of the token to withdraw (address(0) for ETH)
-     * @param amount Amount to withdraw
+     * @dev Emergency function to withdraw all tokens to the timelock
+     * @param token The ERC20 token to withdraw
+     * @notice Only callable by addresses with MANAGER_ROLE
+     * @custom:throws ZeroAddress if token address is zero
+     * @custom:throws ZeroBalanceError if contract has no token balance
      */
-    function emergencyWithdraw(address token, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(MANAGER_ROLE)
-        nonZeroAddress(token)
-        nonZeroAmount(amount)
-    {
-        if (token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
-            // ETH withdrawal
-            if (address(this).balance < amount) {
-                revert InsufficientBalance(amount, address(this).balance);
-            }
-            payable(_timelockAddress).sendValue(amount);
-        } else {
-            // ERC20 token withdrawal
-            uint256 balance = IERC20(token).balanceOf(address(this));
-            if (balance < amount) {
-                revert InsufficientBalance(amount, balance);
-            }
-            IERC20(token).safeTransfer(_timelockAddress, amount);
-        }
+    function emergencyWithdrawToken(address token) external nonReentrant onlyRole(MANAGER_ROLE) nonZeroAddress(token) {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance == 0) revert ZeroBalance();
 
-        emit EmergencyWithdrawal(token, _timelockAddress, amount);
+        IERC20(token).safeTransfer(_timelockAddress, balance);
+        emit EmergencyWithdrawal(token, _timelockAddress, balance);
+    }
+
+    /**
+     * @dev Emergency function to withdraw all ETH to the timelock
+     * @notice Only callable by addresses with MANAGER_ROLE
+     * @custom:throws ZeroBalanceError if contract has no ETH balance
+     */
+    function emergencyWithdrawEther() external nonReentrant onlyRole(MANAGER_ROLE) {
+        uint256 balance = address(this).balance;
+        if (balance == 0) revert ZeroBalance();
+
+        payable(_timelockAddress).sendValue(balance);
+        emit EmergencyWithdrawal(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE, _timelockAddress, balance);
     }
 
     /**
@@ -300,7 +296,7 @@ contract Treasury is
      * @param newImplementation Address of the new implementation
      */
     function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) {
-        if (newImplementation == address(0)) revert ZeroAddressError();
+        if (newImplementation == address(0)) revert ZeroAddress();
 
         uint64 currentTime = uint64(block.timestamp);
         uint64 effectiveTime = currentTime + uint64(UPGRADE_TIMELOCK_DURATION);
