@@ -18,10 +18,10 @@ interface IVESTING {
     event ERC20Released(address indexed token, uint256 amount);
 
     /**
-     * @dev Custom Error.
-     * @param msg error desription
+     * @notice Error thrown when a zero address is provided where a valid address is required
+     * @dev Used in validation of constructor parameters
      */
-    error CustomError(string msg);
+    error ZeroAddress();
 
     /// @dev Getter for the start timestamp
     /// @return start timestamp
