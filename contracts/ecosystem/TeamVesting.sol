@@ -14,7 +14,6 @@ import {IERC20, SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeE
 import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
@@ -75,19 +74,24 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
 
     /**
      * @dev Allows the DAO to cancel the contract in case the team member leaves.
+     * @return remainder The amount of tokens returned to the creator
      * First releases any vested tokens to the beneficiary, then returns
      * the remaining unvested tokens to the timelock controller.
      * Can be called multiple times but will only transfer the remaining balance.
      */
-    function cancelContract() external nonReentrant onlyTimelock {
-        // Release vested tokens to beneficiary first
-        if (releasable() > 0) {
-            release();
+    function cancelContract() external nonReentrant onlyTimelock returns (uint256 remainder) {
+        IERC20 tokenInstance = IERC20(_token);
+        uint256 releasableAmount = releasable();
+
+        // Release vested tokens directly without calling release()
+        if (releasableAmount > 0) {
+            _tokensReleased += releasableAmount;
+            emit ERC20Released(_token, releasableAmount);
+            SafeERC20.safeTransfer(tokenInstance, owner(), releasableAmount);
         }
 
         // Get current balance
-        IERC20 tokenInstance = IERC20(_token);
-        uint256 remainder = tokenInstance.balanceOf(address(this));
+        remainder = tokenInstance.balanceOf(address(this));
 
         // Only emit event and transfer if there are tokens to transfer
         if (remainder > 0) {
@@ -100,7 +104,7 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
      * @dev Release the tokens that have already vested.
      * Emits a {ERC20Released} event.
      */
-    function release() public virtual {
+    function release() public virtual nonReentrant {
         uint256 amount = releasable();
         if (amount == 0) return;
 
@@ -146,7 +150,7 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
      * @return amount of vested tokens
      */
     function releasable() public view virtual returns (uint256) {
-        return vestedAmount(SafeCast.toUint64(block.timestamp)) - released();
+        return vestedAmount(uint64(block.timestamp)) - released();
     }
 
     /**
