@@ -157,28 +157,32 @@ contract InvestmentManagerV2 is
         emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
     }
 
-    function emergencyWithdraw(address token, uint256 amount)
-        external
-        nonReentrant
-        onlyRole(MANAGER_ROLE)
-        nonZeroAmount(amount)
-    {
-        if (token == 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE) {
-            // ETH withdrawal
-            if (address(this).balance < amount) {
-                revert InsufficientBalance(amount, address(this).balance);
-            }
-            payable(timelock).sendValue(amount);
-        } else {
-            // ERC20 token withdrawal
-            uint256 balance = IERC20(token).balanceOf(address(this));
-            if (balance < amount) {
-                revert InsufficientBalance(amount, balance);
-            }
-            IERC20(token).safeTransfer(timelock, amount);
-        }
+    /**
+     * @dev Emergency function to withdraw all tokens to the timelock
+     * @param token The ERC20 token to withdraw
+     * @notice Only callable by addresses with MANAGER_ROLE
+     * @custom:throws ZeroAddressDetected if token address is zero
+     * @custom:throws ZeroBalance if contract has no token balance
+     */
+    function emergencyWithdrawToken(address token) external nonReentrant onlyRole(MANAGER_ROLE) nonZeroAddress(token) {
+        uint256 balance = IERC20(token).balanceOf(address(this));
+        if (balance == 0) revert ZeroBalance();
 
-        emit EmergencyWithdrawal(token, amount);
+        IERC20(token).safeTransfer(timelock, balance);
+        emit EmergencyWithdrawal(token, balance);
+    }
+
+    /**
+     * @dev Emergency function to withdraw all ETH to the timelock
+     * @notice Only callable by addresses with MANAGER_ROLE
+     * @custom:throws ZeroBalance if contract has no ETH balance
+     */
+    function emergencyWithdrawEther() external nonReentrant onlyRole(MANAGER_ROLE) {
+        uint256 balance = address(this).balance;
+        if (balance == 0) revert ZeroBalance();
+
+        payable(timelock).sendValue(balance);
+        emit EmergencyWithdrawal(0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE, balance);
     }
 
     function createRound(
@@ -328,9 +332,6 @@ contract InvestmentManagerV2 is
         whenNotPaused
     {
         Round storage currentRound = rounds[roundId];
-        // if (currentRound.status != RoundStatus.COMPLETED) {
-        //     revert InvalidRoundStatus(roundId, RoundStatus.COMPLETED, currentRound.status);
-        // }
 
         address[] storage roundInvestors = investors[roundId];
         uint256 investorCount = roundInvestors.length;
@@ -417,12 +418,9 @@ contract InvestmentManagerV2 is
     }
 
     function upgradeTimelockRemaining() external view returns (uint256) {
-        if (!pendingUpgrade.exists) return 0;
-
-        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
-        if (block.timestamp >= deadline) return 0;
-
-        return deadline - block.timestamp;
+        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
+            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
+            : 0;
     }
 
     function getRefundAmount(uint32 roundId, address investor) external view returns (uint256) {
