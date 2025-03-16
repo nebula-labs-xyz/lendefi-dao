@@ -20,10 +20,27 @@ interface ITEAMVESTING {
     event ERC20Released(address indexed token, uint256 amount);
 
     /**
-     * @dev Custom Error.
-     * @param msg error desription
+     * @dev Contract initialization event
      */
-    error CustomError(string msg);
+    event VestingInitialized(
+        address indexed token,
+        address indexed beneficiary,
+        address indexed timelock,
+        uint64 startTimestamp,
+        uint64 duration
+    );
+    /**
+     * @notice Error thrown when an unauthorized address attempts a restricted action
+     * @dev Used to restrict functions that should only be callable by the contract creator
+     */
+
+    error Unauthorized();
+
+    /**
+     * @notice Error thrown when a zero address is provided where a valid address is required
+     * @dev Used in validation of constructor parameters
+     */
+    error ZeroAddress();
 
     /**
      * @dev Getter for the start timestamp.
