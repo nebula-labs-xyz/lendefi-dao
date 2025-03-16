@@ -432,7 +432,7 @@ contract BasicDeploy is Test {
 
     function _deployGovernor() internal {
         // deploy Governor
-        bytes memory data = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockInstance, guardian));
+        bytes memory data = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockInstance, gnosisSafe));
         address payable proxy = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data));
         govInstance = LendefiGovernor(proxy);
         address govImplementation = Upgrades.getImplementationAddress(proxy);
