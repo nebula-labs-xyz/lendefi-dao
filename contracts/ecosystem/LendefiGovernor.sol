@@ -47,8 +47,20 @@ contract LendefiGovernor is
     uint32 public constant DEFAULT_VOTING_PERIOD = 50400; // ~1 week
     uint256 public constant DEFAULT_PROPOSAL_THRESHOLD = 20_000 ether; // 20,000 tokens
 
+    /// @dev Upgrade timelock duration in seconds (3 days)
+    uint256 public constant UPGRADE_TIMELOCK_DURATION = 3 days;
+
+    /// @dev Structure to hold upgrade request details
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
+
+    /// @dev Pending upgrade information
+    UpgradeRequest public pendingUpgrade;
     /// @dev Storage gap for future upgrades
-    uint256[48] private __gap;
+    uint256[22] private __gap;
 
     /**
      * @dev Initialized Event.
@@ -62,6 +74,17 @@ contract LendefiGovernor is
      * @param implementation new implementation address
      */
     event Upgrade(address indexed src, address indexed implementation);
+
+    /**
+     * @dev Event emitted when an upgrade is scheduled
+     * @param scheduler address scheduling the upgrade
+     * @param implementation new implementation address
+     * @param scheduledTime when upgrade was scheduled
+     * @param effectiveTime when upgrade can be executed
+     */
+    event UpgradeScheduled(
+        address indexed scheduler, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
+    );
 
     /**
      * @dev Event emitted when governance settings are updated via emergency reset
@@ -84,6 +107,21 @@ contract LendefiGovernor is
      * @dev Error thrown when unauthorized access
      */
     error UnauthorizedAccess();
+
+    /**
+     * @dev Error thrown when trying to upgrade before timelock expires
+     */
+    error UpgradeTimelockActive(uint256 timeRemaining);
+
+    /**
+     * @dev Error thrown when trying to upgrade without scheduling first
+     */
+    error UpgradeNotScheduled();
+
+    /**
+     * @dev Error thrown when implementation address doesn't match scheduled upgrade
+     */
+    error ImplementationMismatch(address scheduledImpl, address attemptedImpl);
 
     /**
      * @dev Modifier to restrict access to gnosisSafe only
@@ -140,6 +178,32 @@ contract LendefiGovernor is
         address oldGnosisSafe = gnosisSafe;
         gnosisSafe = newGnosisSafe;
         emit GnosisSafeUpdated(oldGnosisSafe, newGnosisSafe);
+    }
+    /**
+     * @notice Schedules an upgrade to a new implementation with timelock
+     * @dev Can only be called by the gnosisSafe address
+     * @param newImplementation Address of the new implementation contract
+     */
+
+    function scheduleUpgrade(address newImplementation) external onlyGnosisSafe {
+        if (newImplementation == address(0)) revert ZeroAddress();
+
+        uint64 currentTime = uint64(block.timestamp);
+        uint64 effectiveTime = currentTime + uint64(UPGRADE_TIMELOCK_DURATION);
+
+        pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
+
+        emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @notice Returns the remaining time before a scheduled upgrade can be executed
+     * @return timeRemaining The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     */
+    function upgradeTimelockRemaining() external view returns (uint256) {
+        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
+            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
+            : 0;
     }
 
     // The following functions are overrides required by Solidity.
@@ -237,6 +301,22 @@ contract LendefiGovernor is
 
     /// @inheritdoc UUPSUpgradeable
     function _authorizeUpgrade(address newImplementation) internal override onlyGnosisSafe {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+
+        if (pendingUpgrade.implementation != newImplementation) {
+            revert ImplementationMismatch(pendingUpgrade.implementation, newImplementation);
+        }
+
+        uint256 timeElapsed = block.timestamp - pendingUpgrade.scheduledTime;
+        if (timeElapsed < UPGRADE_TIMELOCK_DURATION) {
+            revert UpgradeTimelockActive(UPGRADE_TIMELOCK_DURATION - timeElapsed);
+        }
+
+        // Clear the scheduled upgrade
+        delete pendingUpgrade;
+
         ++uupsVersion;
         emit Upgrade(msg.sender, newImplementation);
     }
