@@ -8,10 +8,17 @@ pragma solidity 0.8.23;
  */
 
 interface ITEAMMANAGER {
+    /// @dev Upgrade timelock storage
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
     /**
      * @dev Initialized Event.
      * @param src sender address
      */
+
     event Initialized(address indexed src);
 
     /**
@@ -30,10 +37,78 @@ interface ITEAMMANAGER {
     event AddTeamMember(address indexed account, address indexed vesting, uint256 amount);
 
     /**
-     * @dev Custom Error.
-     * @param msg error desription
+     * @dev Emitted when an upgrade is scheduled
+     * @param sender The address that scheduled the upgrade
+     * @param implementation The new implementation address
+     * @param scheduledTime The time when the upgrade was scheduled
+     * @param effectiveTime The time when the upgrade can be executed
      */
-    error CustomError(string msg);
+    event UpgradeScheduled(
+        address indexed sender, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
+    );
+
+    /**
+     * @dev Error thrown when an address parameter is zero
+     */
+    error ZeroAddress();
+
+    /**
+     * @dev Error thrown when an amount parameter is zero
+     */
+    error ZeroAmount();
+
+    /**
+     * @dev Error thrown when a beneficiary already has an allocation
+     * @param beneficiary The address that already has an allocation
+     */
+    error BeneficiaryAlreadyExists(address beneficiary);
+
+    /**
+     * @dev Error thrown when cliff is outside allowed range
+     * @param provided The provided cliff duration
+     * @param minAllowed The minimum allowed cliff duration
+     * @param maxAllowed The maximum allowed cliff duration
+     */
+    error InvalidCliff(uint256 provided, uint256 minAllowed, uint256 maxAllowed);
+
+    /**
+     * @dev Error thrown when duration is outside allowed range
+     * @param provided The provided vesting duration
+     * @param minAllowed The minimum allowed vesting duration
+     * @param maxAllowed The maximum allowed vesting duration
+     */
+    error InvalidDuration(uint256 provided, uint256 minAllowed, uint256 maxAllowed);
+
+    /**
+     * @dev Error thrown when allocation exceeds remaining supply
+     * @param requested The requested allocation amount
+     * @param available The available supply
+     */
+    error SupplyExceeded(uint256 requested, uint256 available);
+
+    /**
+     * @dev Error thrown when trying to execute an upgrade too soon
+     * @param remainingTime The time remaining until upgrade can be executed
+     */
+    error UpgradeTimelockActive(uint256 remainingTime);
+
+    /**
+     * @dev Error thrown when trying to execute an upgrade that wasn't scheduled
+     */
+    error UpgradeNotScheduled();
+
+    /**
+     * @dev Error thrown when trying to execute an upgrade with wrong implementation
+     * @param expected The expected implementation address
+     * @param provided The provided implementation address
+     */
+    error ImplementationMismatch(address expected, address provided);
+
+    /**
+     * @dev Error thrown for general validation failures
+     * @param reason Description of the validation failure
+     */
+    error ValidationFailed(string reason);
 
     /**
      * @dev Pause contract.
@@ -55,6 +130,18 @@ interface ITEAMMANAGER {
     function addTeamMember(address beneficiary, uint256 amount, uint256 cliff, uint256 duration) external;
 
     /**
+     * @dev Schedules an upgrade to a new implementation
+     * @param newImplementation Address of the new implementation
+     */
+    function scheduleUpgrade(address newImplementation) external;
+
+    /**
+     * @dev Returns the remaining time before a scheduled upgrade can be executed
+     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     */
+    function upgradeTimelockRemaining() external view returns (uint256);
+
+    /**
      * @dev Getter for the UUPS version, incremented each time an upgrade occurs.
      * @return version number (1,2,3)
      */
@@ -68,7 +155,7 @@ interface ITEAMMANAGER {
     function allocations(address account) external view returns (uint256);
 
     /**
-     * @dev Getter for the  address of vesting contract created for team member.
+     * @dev Getter for the address of vesting contract created for team member.
      * @param account address
      * @return vesting contract address
      */
@@ -85,4 +172,18 @@ interface ITEAMMANAGER {
      * @return amount
      */
     function totalAllocation() external view returns (uint256);
+
+    /**
+     * @dev Access the pending upgrade information
+     * @return implementation The address of the pending implementation
+     * @return scheduledTime The timestamp when the upgrade was scheduled
+     * @return exists Whether a pending upgrade exists
+     */
+    function pendingUpgrade() external view returns (address implementation, uint64 scheduledTime, bool exists);
+
+    /**
+     * @dev Get the timelock address.
+     * @return Address of the timelock controller
+     */
+    function timelock() external view returns (address);
 }
