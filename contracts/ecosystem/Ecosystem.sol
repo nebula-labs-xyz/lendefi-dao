@@ -425,9 +425,8 @@ contract Ecosystem is
         issuedPartnership += amount;
 
         // Use PartnerVesting which is cancellable by the timelock
-        PartnerVesting vestingContract = new PartnerVesting(
-            address(tokenInstance), timelock, partner, uint64(block.timestamp + cliff), uint64(duration)
-        );
+        PartnerVesting vestingContract =
+            new PartnerVesting(address(tokenInstance), partner, uint64(block.timestamp + cliff), uint64(duration));
 
         vestingContracts[partner] = address(vestingContract);
 
