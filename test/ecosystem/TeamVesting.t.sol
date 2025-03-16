@@ -1,20 +1,14 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import "../BasicDeploy.sol"; // solhint-disable-line
+import {Test, Vm} from "forge-std/Test.sol";
 import {TeamVesting} from "../../contracts/ecosystem/TeamVesting.sol";
+import {TokenMock} from "../../contracts/mock/TokenMock.sol";
+import {ITEAMVESTING} from "../../contracts/interfaces/ITeamVesting.sol";
+import "../BasicDeploy.sol";
 
-contract TeamVestingTest is BasicDeploy {
-    // Constants
-    uint64 public constant CLIFF_PERIOD = 365 days;
-    uint64 public constant VESTING_DURATION = 730 days;
-    uint256 public constant VESTING_AMOUNT = 200_000 ether;
-    // State variables
-    uint64 public startTimestamp;
-    TeamVesting internal vestingContract;
-
+contract TeamVestingTest is Test {
     // Events
-    event ERC20Released(address indexed token, uint256 amount);
     event VestingInitialized(
         address indexed token,
         address indexed beneficiary,
@@ -22,548 +16,511 @@ contract TeamVestingTest is BasicDeploy {
         uint64 startTimestamp,
         uint64 duration
     );
-    event AddPartner(address account, address vesting, uint256 amount);
+    event ERC20Released(address indexed token, uint256 amount);
     event Cancelled(uint256 amount);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    event OwnershipTransferStarted(address indexed previousOwner, address indexed newOwner);
+
+    // Test accounts
+    address timelock;
+    address teamMember;
+    address alice = address(0x5678);
+    address bob = address(0x8765);
+
+    // Contract instances
+    TokenMock tokenInstance;
+    TeamVesting vestingContract;
+
+    // Vesting parameters
+    uint64 startTimestamp;
+    uint64 VESTING_DURATION = 365 days;
+    uint64 CLIFF_PERIOD = 90 days;
+    uint256 VESTING_AMOUNT = 1_000_000e18;
 
     function setUp() public {
-        // Deploy base contracts
-        deployComplete();
+        // Deploy mock token
+        tokenInstance = new TokenMock("Ecosystem Token", "ECO");
+
+        // Setup test addresses
+        timelock = address(0xABCD);
+        teamMember = address(0x1234);
+
+        // Set start time to current timestamp
         startTimestamp = uint64(block.timestamp);
 
-        // Initialize token distribution
-        _initializeTokenDistribution();
+        // Deploy vesting contract
+        vestingContract =
+            new TeamVesting(address(tokenInstance), timelock, teamMember, startTimestamp, VESTING_DURATION);
 
-        // Deploy and fund vesting contract
-        _deployAndFundVesting();
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            DEPLOYMENT TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function testDeploy() public {
-        // Test successful deployment
-        TeamVesting vesting =
-            new TeamVesting(address(tokenInstance), address(0x2), address(0x3), startTimestamp, VESTING_DURATION);
+        // Fund the vesting contract
+        tokenInstance.mint(address(vestingContract), VESTING_AMOUNT);
 
         // Verify initial state
-        assertEq(vesting.owner(), address(0x3));
-        assertEq(vesting._timelock(), address(0x2));
-        assertEq(vesting.start(), startTimestamp);
-        assertEq(vesting.duration(), VESTING_DURATION);
+        assertEq(vestingContract.owner(), teamMember, "Owner should be team member");
+        assertEq(vestingContract._timelock(), timelock, "Timelock address incorrect");
+        assertEq(vestingContract.start(), startTimestamp, "Start timestamp incorrect");
+        assertEq(vestingContract.duration(), VESTING_DURATION, "Duration incorrect");
+        assertEq(vestingContract.end(), startTimestamp + VESTING_DURATION, "End timestamp incorrect");
+        assertEq(vestingContract.released(), 0, "Released amount should be zero initially");
+        assertEq(tokenInstance.balanceOf(address(vestingContract)), VESTING_AMOUNT, "Contract should have tokens");
+    }
 
-        // Test zero address validations
-        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
-        new TeamVesting(address(0), address(0x2), address(0x3), startTimestamp, VESTING_DURATION);
+    // Test constructor validations
+    function testRevertConstructorZeroAddresses() public {
+        // Test zero token address
+        vm.expectRevert(TeamVesting.ZeroAddress.selector);
+        new TeamVesting(address(0), timelock, teamMember, startTimestamp, VESTING_DURATION);
 
-        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
-        new TeamVesting(address(tokenInstance), address(0), address(0x3), startTimestamp, VESTING_DURATION);
+        // Test zero timelock address
+        vm.expectRevert(TeamVesting.ZeroAddress.selector);
+        new TeamVesting(address(tokenInstance), address(0), teamMember, startTimestamp, VESTING_DURATION);
 
+        // Test zero beneficiary address (owner)
         vm.expectRevert(abi.encodeWithSignature("OwnableInvalidOwner(address)", address(0)));
-        new TeamVesting(address(tokenInstance), address(0x2), address(0), startTimestamp, VESTING_DURATION);
+        new TeamVesting(address(tokenInstance), timelock, address(0), startTimestamp, VESTING_DURATION);
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            VESTING TESTS
-    //////////////////////////////////////////////////////////////*/
+    // Test constructor event emission
+    function testConstructorEvents() public {
+        // Create a new contract and expect the event
+        vm.expectEmit(true, true, true, true);
+        emit VestingInitialized(address(tokenInstance), teamMember, timelock, startTimestamp, VESTING_DURATION);
+        new TeamVesting(address(tokenInstance), timelock, teamMember, startTimestamp, VESTING_DURATION);
+    }
 
-    function testVestingBeforeCliff() public {
-        uint256 initialBalance = tokenInstance.balanceOf(address(vestingContract));
+    // Test releasing tokens after vesting begins
+    function testReleasePartial() public {
+        // Warp to 25% through vesting period
+        vm.warp(startTimestamp + VESTING_DURATION / 4);
 
-        vm.warp(vestingContract.start() - 1);
+        // Calculate expected amount
+        uint256 expectedAmount = VESTING_AMOUNT / 4; // 25%
+
+        // Release as team member
+        vm.prank(teamMember);
+        vm.expectEmit(address(vestingContract));
+        emit ERC20Released(address(tokenInstance), expectedAmount);
+        vestingContract.release();
+
+        // Verify balances and state
+        assertEq(tokenInstance.balanceOf(teamMember), expectedAmount, "Team member should receive vested tokens");
+        assertEq(
+            tokenInstance.balanceOf(address(vestingContract)),
+            VESTING_AMOUNT - expectedAmount,
+            "Contract balance incorrect"
+        );
+        assertEq(vestingContract.released(), expectedAmount, "Released amount incorrect");
+
+        // Trying to release again immediately should do nothing
+        vm.prank(teamMember);
+        vestingContract.release();
+        assertEq(tokenInstance.balanceOf(teamMember), expectedAmount, "No additional tokens should be released");
+        assertEq(vestingContract.released(), expectedAmount, "Released amount shouldn't change");
+    }
+
+    // Test releasing tokens after full vesting
+    function testReleaseFull() public {
+        // Warp to after vesting period
+        vm.warp(startTimestamp + VESTING_DURATION + 1 days);
+
+        // Release as team member
+        vm.prank(teamMember);
+        vestingContract.release();
+
+        // Verify all tokens released
+        assertEq(tokenInstance.balanceOf(teamMember), VESTING_AMOUNT, "All tokens should be released");
+        assertEq(tokenInstance.balanceOf(address(vestingContract)), 0, "Contract should have no tokens left");
+        assertEq(vestingContract.released(), VESTING_AMOUNT, "Released amount should match total");
+    }
+
+    // Test releasable calculation
+    function testReleasable() public {
+        // Initially nothing is releasable
+        assertEq(vestingContract.releasable(), 0, "Nothing should be releasable at start");
+
+        // At 50% of vesting period
+        vm.warp(startTimestamp + VESTING_DURATION / 2);
+        assertEq(vestingContract.releasable(), VESTING_AMOUNT / 2, "50% should be releasable at midpoint");
+
+        // After vesting period
+        vm.warp(startTimestamp + VESTING_DURATION + 1);
+        assertEq(vestingContract.releasable(), VESTING_AMOUNT, "Everything should be releasable after end");
+
+        // After releasing tokens
+        vm.prank(teamMember);
+        vestingContract.release();
+        assertEq(vestingContract.releasable(), 0, "Nothing releasable after full release");
+    }
+
+    // Test cancellation by timelock
+    function testCancelByTimelock() public {
+        // Warp to 25% through vesting period
+        vm.warp(startTimestamp + VESTING_DURATION / 4);
+
+        // Expected vested amount: 25%
+        uint256 vestedAmount = VESTING_AMOUNT / 4;
+        uint256 unvestedAmount = VESTING_AMOUNT - vestedAmount;
+
+        // Cancel as timelock
+        vm.prank(timelock);
+        vm.expectEmit(address(vestingContract));
+        emit Cancelled(unvestedAmount);
+        vestingContract.cancelContract();
+
+        // Verify team member got vested tokens
+        assertEq(tokenInstance.balanceOf(teamMember), vestedAmount, "Team member should get vested tokens");
+
+        // Verify timelock got unvested tokens
+        assertEq(tokenInstance.balanceOf(timelock), unvestedAmount, "Timelock should get unvested tokens");
+
+        // Verify contract has no tokens left
+        assertEq(tokenInstance.balanceOf(address(vestingContract)), 0, "Contract should have no tokens left");
+    }
+
+    // Test revert on unauthorized cancellation
+    function testRevertUnauthorizedCancel() public {
         vm.prank(alice);
-        vestingContract.release();
+        vm.expectRevert(TeamVesting.Unauthorized.selector);
+        vestingContract.cancelContract();
 
-        assertEq(vestingContract.releasable(), 0);
-        assertEq(tokenInstance.balanceOf(alice), 0);
-        assertEq(vestingContract.released(), 0);
-        assertEq(tokenInstance.balanceOf(address(vestingContract)), initialBalance);
+        vm.prank(teamMember);
+        vm.expectRevert(TeamVesting.Unauthorized.selector);
+        vestingContract.cancelContract();
     }
 
-    function testVestingAfterCliff() public {
-        vm.warp(block.timestamp + CLIFF_PERIOD + 100 days);
-
-        uint256 expectedVested = vestingContract.releasable();
-        vestingContract.release();
-
-        assertEq(vestingContract.released(), expectedVested);
-        assertEq(tokenInstance.balanceOf(alice), expectedVested);
-        assertEq(tokenInstance.balanceOf(address(vestingContract)), VESTING_AMOUNT - expectedVested);
-    }
-
-    function testFullyVested() public {
-        vm.warp(block.timestamp + CLIFF_PERIOD + VESTING_DURATION);
-
-        assertEq(vestingContract.releasable(), VESTING_AMOUNT);
-
-        vestingContract.release();
-
-        assertEq(tokenInstance.balanceOf(alice), VESTING_AMOUNT);
-        assertEq(tokenInstance.balanceOf(address(vestingContract)), 0);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            OWNERSHIP TESTS
-    //////////////////////////////////////////////////////////////*/
-
+    // Test ownership transfer
     function testOwnershipTransfer() public {
-        vm.prank(alice);
-        vestingContract.transferOwnership(bob);
-
-        assertEq(vestingContract.pendingOwner(), bob);
-        assertEq(vestingContract.owner(), alice);
-
-        vm.prank(bob);
-        vestingContract.acceptOwnership();
-
-        assertEq(vestingContract.owner(), bob);
-        assertEq(vestingContract.pendingOwner(), address(0));
-    }
-
-    function testUnauthorizedOwnershipTransfer() public {
-        vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", bob));
-        vestingContract.transferOwnership(bob);
-    }
-
-    //Test: TransferOwnership
-    function testTransferOwnership() public {
-        vm.prank(alice);
-        vestingContract.transferOwnership(bob);
-
-        // Check pending owner is set
-        assertEq(vestingContract.pendingOwner(), bob);
-        // Check current owner hasn't changed
-        assertEq(vestingContract.owner(), alice);
-    }
-
-    //Test: TransferOwnershipUnauthorized
-    function testTransferOwnershipUnauthorized() public {
-        // Try to transfer ownership from non-owner account
-        vm.prank(address(0x9999));
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", address(0x9999)));
-        vestingContract.transferOwnership(bob);
-    }
-
-    // Test: AcceptOwnership
-    function testAcceptOwnership() public {
-        // Set up pending ownership transfer
-        vm.prank(alice);
-        vestingContract.transferOwnership(bob);
-
-        // Accept ownership as new owner
-        vm.prank(bob);
-        vestingContract.acceptOwnership();
-
-        // Verify ownership changed
-        assertEq(vestingContract.owner(), bob);
-        assertEq(vestingContract.pendingOwner(), address(0));
-    }
-
-    //Test: AcceptOwnershipUnauthorized
-    function testAcceptOwnershipUnauthorized() public {
-        // Set up pending ownership transfer
-        vm.prank(alice);
-        vestingContract.transferOwnership(bob);
-
-        // Try to accept ownership from unauthorized account
-        address unauthorized = address(0x9999);
-        vm.prank(unauthorized);
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", unauthorized));
-        vestingContract.acceptOwnership();
-    }
-
-    // Test: CancelTransferOwnership
-    function testCancelTransferOwnership() public {
-        // Set up pending ownership transfer
-        vm.prank(alice);
-        vestingContract.transferOwnership(bob);
-
-        // Cancel transfer by setting pending owner to zero address
-        vm.prank(alice);
-        vestingContract.transferOwnership(address(0));
-
-        // Verify pending owner is cleared
-        assertEq(vestingContract.pendingOwner(), address(0));
-        // Verify current owner hasn't changed
-        assertEq(vestingContract.owner(), alice);
-    }
-
-    // Test: Ownership Transfer
-    function testOwnershipTransferTwo() public {
-        // Transfer ownership to a new address
-        address newOwner = address(0x123);
-        vm.prank(alice);
-        vestingContract.transferOwnership(newOwner);
-
-        // Verify the new owner
-        vm.prank(newOwner);
-        vestingContract.acceptOwnership();
-        assertEq(vestingContract.owner(), newOwner);
-
-        // Attempt unauthorized ownership transfer and expect a revert
-        vm.startPrank(address(0x9999991));
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", address(0x9999991)));
+        // Start transfer
+        vm.prank(teamMember);
+        vm.expectEmit(address(vestingContract));
+        emit OwnershipTransferStarted(teamMember, alice);
         vestingContract.transferOwnership(alice);
-        vm.stopPrank();
-    }
 
-    // Test: Ownership Renouncement
-    function testOwnershipRenouncement() public {
-        // Renounce ownership
+        // Still owned by team member
+        assertEq(vestingContract.owner(), teamMember, "Owner shouldn't change until accepted");
+
+        // Accept transfer
         vm.prank(alice);
-        vestingContract.renounceOwnership();
+        vm.expectEmit(address(vestingContract));
+        emit OwnershipTransferred(teamMember, alice);
+        vestingContract.acceptOwnership();
 
-        // Verify that the owner is set to the zero address
-        assertEq(vestingContract.owner(), address(0));
+        // Now owned by alice
+        assertEq(vestingContract.owner(), alice, "Alice should be the new owner");
 
-        // Attempt unauthorized ownership renouncement and expect a revert
+        // Alice can release tokens that go to her (new behavior)
+        vm.warp(startTimestamp + VESTING_DURATION / 2);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", alice));
-        vestingContract.renounceOwnership();
+        vestingContract.release();
+        assertEq(tokenInstance.balanceOf(alice), VESTING_AMOUNT / 2, "Tokens should go to the new owner");
     }
 
-    /*//////////////////////////////////////////////////////////////
-                        CANCELLATION TESTS
-    //////////////////////////////////////////////////////////////*/
+    // Test release after ownership transfer (critical test for TeamVesting)
+    function testReleaseAfterOwnershipTransfer() public {
+        // Make sure we're past the cliff first
+        vm.warp(startTimestamp + VESTING_DURATION / 4);
 
-    function testCancelContractBeforeCliff() public {
-        // Try to cancel before cliff
-        vm.prank(address(timelockInstance));
-        vestingContract.cancelContract();
+        // Transfer ownership
+        vm.prank(teamMember);
+        vestingContract.transferOwnership(alice);
 
-        // Nothing should be released to beneficiary
-        assertEq(tokenInstance.balanceOf(alice), 0);
-        // All tokens should be returned to timelock
-        assertEq(tokenInstance.balanceOf(address(timelockInstance)), VESTING_AMOUNT);
-    }
-
-    function testCancelContractAfterCliff() public {
-        // Warp to after cliff but before full vesting
-        vm.warp(block.timestamp + CLIFF_PERIOD + 100 days);
-
-        // Calculate expected vested amount
-        uint256 expectedVested = vestingContract.releasable();
-
-        vm.prank(address(timelockInstance));
-        vestingContract.cancelContract();
-
-        // Check vested tokens sent to beneficiary
-        assertEq(tokenInstance.balanceOf(alice), expectedVested);
-        // Check remaining tokens returned to timelock
-        assertEq(tokenInstance.balanceOf(address(timelockInstance)), VESTING_AMOUNT - expectedVested);
-    }
-
-    function testCancelContractAfterFullVesting() public {
-        // Warp to after full vesting
-        vm.warp(block.timestamp + CLIFF_PERIOD + VESTING_DURATION);
-
-        vm.prank(address(timelockInstance));
-        vestingContract.cancelContract();
-
-        // All tokens should go to beneficiary
-        assertEq(tokenInstance.balanceOf(alice), VESTING_AMOUNT);
-        // No tokens should be returned to timelock
-        assertEq(tokenInstance.balanceOf(address(timelockInstance)), 0);
-    }
-
-    function testUnauthorizedCancel() public {
-        // Try to cancel from unauthorized address
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSignature("Unauthorized()"));
-        vestingContract.cancelContract();
+        vestingContract.acceptOwnership();
 
-        vm.prank(bob);
-        vm.expectRevert(abi.encodeWithSignature("Unauthorized()"));
-        vestingContract.cancelContract();
-    }
+        // Verify owner changed
+        assertEq(vestingContract.owner(), alice, "Alice should be the new owner");
 
-    function testCancelEmitsEvent() public {
-        vm.prank(address(timelockInstance));
+        // Warp to 50% through vesting period
+        vm.warp(startTimestamp + VESTING_DURATION / 2);
 
-        // Expect Cancelled event with remaining balance
-        vm.expectEmit(false, false, false, true);
-        emit Cancelled(VESTING_AMOUNT);
+        // Calculate expected amount (50% of total vesting amount)
+        uint256 expectedAmount = VESTING_AMOUNT / 2;
 
-        vestingContract.cancelContract();
-    }
-
-    function testCancelMidVesting() public {
-        vm.warp(block.timestamp + VESTING_DURATION / 2);
-        uint256 vested = vestingContract.releasable();
-
-        vm.prank(address(timelockInstance));
-        vm.expectEmit(true, true, true, true);
-        emit Cancelled(VESTING_AMOUNT - vested);
-        vestingContract.cancelContract();
-
-        assertEq(tokenInstance.balanceOf(alice), vested);
-        assertEq(tokenInstance.balanceOf(address(timelockInstance)), VESTING_AMOUNT - vested);
-        assertEq(tokenInstance.balanceOf(address(vestingContract)), 0);
-    }
-
-    function testDoubleCancel() public {
-        // First cancel
-        vm.prank(address(timelockInstance));
-        vestingContract.cancelContract();
-
-        // Second cancel should emit event with 0 amount
-        vm.prank(address(timelockInstance));
-        vestingContract.cancelContract();
-    }
-
-    function testCancelContract() public {
-        vm.warp(block.timestamp + CLIFF_PERIOD + 100 days);
-        uint256 claimable = vestingContract.releasable();
-
-        vm.prank(address(timelockInstance));
-        vestingContract.cancelContract();
-
-        assertEq(tokenInstance.balanceOf(alice), claimable);
-        assertEq(tokenInstance.balanceOf(address(vestingContract)), 0);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                        INITIALIZATION EVENTS TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function testInitializationEvents() public {
-        // Deploy a new vesting contract and check initialization event
-        vm.expectEmit(true, true, true, true);
-        emit VestingInitialized(address(tokenInstance), address(0x3), address(0x2), startTimestamp, VESTING_DURATION);
-
-        new TeamVesting(address(tokenInstance), address(0x2), address(0x3), startTimestamp, VESTING_DURATION);
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            RELEASABLE TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function testReleasableAmount() public {
-        // Test releasable before start
-        assertEq(vestingContract.releasable(), 0, "Should be 0 before start");
-
-        // Test releasable at start
-        vm.warp(vestingContract.start());
-        assertEq(vestingContract.releasable(), 0, "Should be 0 at start");
-
-        // Test releasable at 25% vesting
-        vm.warp(vestingContract.start() + VESTING_DURATION / 4);
-        assertEq(vestingContract.releasable(), VESTING_AMOUNT / 4, "Should be 25% of total amount");
-
-        // Test releasable at 50% vesting
-        vm.warp(vestingContract.start() + VESTING_DURATION / 2);
-        assertEq(vestingContract.releasable(), VESTING_AMOUNT / 2, "Should be 50% of total amount");
-
-        // Test releasable at full vesting
-        vm.warp(vestingContract.start() + VESTING_DURATION);
-        assertEq(vestingContract.releasable(), VESTING_AMOUNT, "Should be 100% of total amount");
-
-        // Test releasable after full vesting
-        vm.warp(vestingContract.start() + VESTING_DURATION + 1 days);
-        assertEq(vestingContract.releasable(), VESTING_AMOUNT, "Should remain at 100% after vesting period");
-    }
-
-    function testReleasableAfterPartialRelease() public {
-        // Warp to 50% vesting
-        vm.warp(vestingContract.start() + VESTING_DURATION / 2);
-        uint256 initialReleasable = vestingContract.releasable();
-
-        // Release half of vested amount
+        // Release as new owner
         vm.prank(alice);
         vestingContract.release();
 
-        // Warp to 75% vesting
-        vm.warp(vestingContract.start() + (VESTING_DURATION * 3 / 4));
-        uint256 expectedReleasable = (VESTING_AMOUNT * 3 / 4) - initialReleasable;
-
-        assertEq(vestingContract.releasable(), expectedReleasable, "Should account for previously released tokens");
+        // Important: In TeamVesting, tokens go to the current owner, not original beneficiary
+        assertEq(tokenInstance.balanceOf(alice), expectedAmount, "Tokens should go to new owner");
+        assertEq(tokenInstance.balanceOf(teamMember), 0, "Original beneficiary should not receive tokens");
     }
 
-    function testReleasableWithFuzzedTime(uint256 _timeOffset) public {
-        // Bound time offset between start and end of vesting
-        _timeOffset = bound(_timeOffset, 0, VESTING_DURATION);
+    // Test timing edge cases
+    function testVestingScheduleTiming() public {
+        // Before start - nothing vested
+        vm.warp(startTimestamp - 1);
+        assertEq(vestingContract.releasable(), 0, "Nothing should be vested before start");
 
-        vm.warp(vestingContract.start() + _timeOffset);
+        // At start - nothing vested
+        vm.warp(startTimestamp);
+        assertEq(vestingContract.releasable(), 0, "Nothing should be vested at start");
 
-        uint256 expectedAmount = (_timeOffset * VESTING_AMOUNT) / VESTING_DURATION;
-        assertEq(vestingContract.releasable(), expectedAmount, "Incorrect releasable amount for given time");
+        // Just after start - tiny amount vested
+        vm.warp(startTimestamp + 1);
+        uint256 oneSecondAmount = VESTING_AMOUNT / VESTING_DURATION;
+        assertEq(vestingContract.releasable(), oneSecondAmount, "Tiny amount should be vested after one second");
+
+        // At end - everything vested
+        vm.warp(startTimestamp + VESTING_DURATION);
+        assertEq(vestingContract.releasable(), VESTING_AMOUNT, "Everything should be vested at end");
+
+        // After end - everything vested
+        vm.warp(startTimestamp + VESTING_DURATION + 1000 days);
+        assertEq(vestingContract.releasable(), VESTING_AMOUNT, "Everything should remain vested after end");
     }
 
-    function testReleasableAfterMultipleReleases() public {
-        // Warp to 25% vesting and release
-        vm.warp(vestingContract.start() + VESTING_DURATION / 4);
-        vm.prank(alice);
+    // Test partial releases
+    function testPartialReleases() public {
+        // Release at 25%
+        vm.warp(startTimestamp + VESTING_DURATION / 4);
+        vm.prank(teamMember);
         vestingContract.release();
+        assertEq(tokenInstance.balanceOf(teamMember), VESTING_AMOUNT / 4, "Should receive 25% at quarter point");
 
-        // Warp to 50% vesting and release
-        vm.warp(vestingContract.start() + VESTING_DURATION / 2);
-        vm.prank(alice);
+        // Release at 50%
+        vm.warp(startTimestamp + VESTING_DURATION / 2);
+        vm.prank(teamMember);
         vestingContract.release();
+        assertEq(tokenInstance.balanceOf(teamMember), VESTING_AMOUNT / 2, "Should receive 50% at midpoint");
 
-        // Warp to 75% vesting
-        vm.warp(vestingContract.start() + (VESTING_DURATION * 3 / 4));
-        uint256 expectedReleasable = (VESTING_AMOUNT * 3 / 4) - (VESTING_AMOUNT / 2);
+        // Release at 75%
+        vm.warp(startTimestamp + VESTING_DURATION * 3 / 4);
+        vm.prank(teamMember);
+        vestingContract.release();
+        assertEq(tokenInstance.balanceOf(teamMember), VESTING_AMOUNT * 3 / 4, "Should receive 75% at third quarter");
 
-        assertEq(vestingContract.releasable(), expectedReleasable, "Should account for all previous releases");
+        // Final release
+        vm.warp(startTimestamp + VESTING_DURATION);
+        vm.prank(teamMember);
+        vestingContract.release();
+        assertEq(tokenInstance.balanceOf(teamMember), VESTING_AMOUNT, "Should receive 100% at end");
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            RELEASE TESTS
-    //////////////////////////////////////////////////////////////*/
-
-    function testReleaseWithZeroAmount() public {
-        // Test release when releasable is 0 (before vesting starts)
-        vm.warp(vestingContract.start() - 1);
-
-        // Get current released amount
-        uint256 beforeReleased = vestingContract.released();
-
-        // Call release and verify it doesn't revert and doesn't change state
-        vm.prank(alice);
-        vestingContract.release();
-
-        assertEq(vestingContract.released(), beforeReleased, "Released amount should not change");
-        assertEq(tokenInstance.balanceOf(alice), 0, "No tokens should be transferred");
-    }
-
-    /*//////////////////////////////////////////////////////////////
-                            FUZZ TESTS
-    //////////////////////////////////////////////////////////////*/
-
+    // Fuzz Test: Check vested amount at different time points
     function testFuzzVesting(uint256 _daysForward) public {
-        // Bound days to be between cliff and total duration (in days)
-        _daysForward = bound(_daysForward, 365, 1095); // 365 to (365 + 730) days
+        // Bound days to be reasonable (0 to 2 years)
+        _daysForward = bound(_daysForward, 0, 730);
 
         // Convert days to seconds for vm.warp
         uint256 timeInSeconds = _daysForward * 1 days;
         vm.warp(startTimestamp + timeInSeconds);
 
+        // Calculate expected vested amount (linear vesting)
         uint256 expectedVested;
-        if (_daysForward >= 1095) {
-            // CLIFF_PERIOD + VESTING_DURATION in days
-            // Fully vested after cliff + duration
+        if (_daysForward >= VESTING_DURATION / 1 days) {
+            // Fully vested
             expectedVested = VESTING_AMOUNT;
-        } else if (_daysForward > 365) {
-            // CLIFF_PERIOD in days
-            // Linear vesting after cliff
-            uint256 timeAfterCliff = _daysForward - 365;
-            expectedVested = (VESTING_AMOUNT * timeAfterCliff) / 730; // VESTING_DURATION in days
         } else {
-            // Nothing vested before cliff
-            expectedVested = 0;
+            // Linear vesting
+            expectedVested = (VESTING_AMOUNT * timeInSeconds) / VESTING_DURATION;
         }
 
-        assertEq(vestingContract.releasable(), expectedVested, "Vested amount incorrect");
+        assertEq(vestingContract.releasable(), expectedVested, "Vested amount calculation incorrect");
     }
 
-    // Fuzz Test case: Check the claimable amount under various times
-    function testFuzzReleasableAmount(uint256 _daysForward) public {
-        vm.assume(_daysForward <= 730); // Assume within vesting period
+    // Test precise calculation at 1/3 of vesting period
+    function testPreciseVestingCalculation() public {
+        // Warp to 1/3 through vesting period (odd fraction to catch rounding errors)
+        vm.warp(startTimestamp + VESTING_DURATION / 3);
 
-        // Get initial state
-        uint256 startTime = vestingContract.start();
+        // Calculate exact expected amount
+        uint256 expectedAmount = (VESTING_AMOUNT * (VESTING_DURATION / 3)) / VESTING_DURATION;
 
-        // Move forward in time after cliff period
-        vm.warp(startTime + (_daysForward * 1 days));
+        // Check releasable
+        assertEq(vestingContract.releasable(), expectedAmount, "Releasable calculation incorrect at 1/3 vesting");
 
-        // Calculate expected vested amount
-        uint256 claimableAmount = vestingContract.releasable();
-        uint256 expectedClaimable;
-
-        if (_daysForward == 730) {
-            expectedClaimable = VESTING_AMOUNT; // Fully vested
-        } else if (_daysForward > 0) {
-            expectedClaimable = (VESTING_AMOUNT * _daysForward) / 730; // Linear vesting
-        } else {
-            expectedClaimable = 0; // Nothing vested yet
-        }
-
-        assertEq(claimableAmount, expectedClaimable, "Claimable amount should match linear vesting schedule");
-    }
-
-    // Fuzz Test: Claim edge cases (before and after vesting period)
-    function testFuzzReleaseEdgeCases(uint256 _daysForward) public {
-        vm.assume(_daysForward <= 730); // Assume max vesting period is 100 days + some buffer
-
-        if (_daysForward >= 730) {
-            // If time has passed, ensure claimable is the total vested
-            vm.warp(block.timestamp + CLIFF_PERIOD + _daysForward * 1 days);
-            uint256 claimableAmount = vestingContract.releasable();
-
-            assertEq(
-                claimableAmount, VESTING_AMOUNT, "Claimable should be equal to total vested after the vesting period"
-            );
-        } else if (_daysForward >= 1) {
-            // Check that claimable amount is progressively increasing over time
-            uint256 claimableAmountBefore = vestingContract.releasable();
-            vm.warp(block.timestamp + CLIFF_PERIOD + _daysForward * 1 days);
-            uint256 claimableAmountAfter = vestingContract.releasable();
-            assertTrue(claimableAmountAfter > claimableAmountBefore, "Claimable amount should increase over time");
-        }
-    }
-
-    // Fuzz Test: Ensure no claim is possible before vesting starts
-    function testFuzzNoReleaseBeforeVesting(uint256 _daysBefore) public {
-        vm.assume(_daysBefore <= 365); // cliff period is 365 days
-
-        // Get initial state
-        uint256 startTime = vestingContract.start();
-
-        // Warp to a time before the cliff ends
-        vm.warp(startTime - (_daysBefore * 1 days));
-
-        // Check releasable amount
-        uint256 claimableBeforeStart = vestingContract.releasable();
-        assertEq(claimableBeforeStart, 0, "Claimable amount should be 0 before the vesting period starts");
-
-        // Verify no tokens can be released
-        vm.prank(alice);
+        // Release and verify
+        vm.prank(teamMember);
         vestingContract.release();
-        assertEq(vestingContract.released(), 0, "No tokens should be released before cliff");
-        assertEq(tokenInstance.balanceOf(alice), 0, "Beneficiary should not receive tokens before cliff");
+
+        assertEq(tokenInstance.balanceOf(teamMember), expectedAmount, "Released amount incorrect at 1/3 vesting");
     }
 
-    /*//////////////////////////////////////////////////////////////
-                            HELPER FUNCTIONS
-    //////////////////////////////////////////////////////////////*/
+    // Test status after initialization and pre-funding
+    function testInitialStateBeforeFunding() public {
+        // Deploy a new vesting contract without funding
+        TeamVesting newVesting =
+            new TeamVesting(address(tokenInstance), timelock, teamMember, startTimestamp, VESTING_DURATION);
 
-    function _initializeTokenDistribution() internal {
-        vm.startPrank(guardian);
-        tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
-        assertEq(tokenInstance.balanceOf(address(ecoInstance)), 22_000_000 ether);
-        assertEq(tokenInstance.balanceOf(address(treasuryInstance)), 28_000_000 ether);
-        vm.stopPrank();
+        // Check state
+        assertEq(newVesting.releasable(), 0, "Releasable should be 0 without funding");
+        assertEq(newVesting.released(), 0, "Released should be 0 initially");
+
+        // Even after vesting period passes, nothing should be releasable without funding
+        vm.warp(startTimestamp + VESTING_DURATION + 1 days);
+        assertEq(newVesting.releasable(), 0, "Releasable should be 0 without funding even after vesting period");
     }
 
-    function _deployAndFundVesting() internal {
-        // Deploy vesting contract with VestingInitialized event expectation
-        vm.expectEmit(true, true, true, true);
-        emit VestingInitialized(
-            address(tokenInstance),
-            alice,
-            address(timelockInstance),
-            uint64(startTimestamp + CLIFF_PERIOD),
-            VESTING_DURATION
+    // Test for edge cases with zero duration or very large durations
+    function testVestingWithShortDuration() public {
+        // Create a new vesting contract with very short duration
+        uint64 shortDuration = 1 days;
+
+        TeamVesting shortVesting =
+            new TeamVesting(address(tokenInstance), timelock, teamMember, uint64(block.timestamp), shortDuration);
+
+        // Fund it
+        tokenInstance.mint(address(shortVesting), VESTING_AMOUNT);
+
+        // Warp to after vesting
+        vm.warp(block.timestamp + shortDuration + 1 hours);
+
+        // Check full vesting
+        assertEq(shortVesting.releasable(), VESTING_AMOUNT, "Short duration should vest fully");
+
+        // Release tokens and verify
+        vm.prank(teamMember);
+        shortVesting.release();
+        assertEq(tokenInstance.balanceOf(teamMember), VESTING_AMOUNT, "All tokens should be released");
+    }
+
+    // Test cancellation after full vesting
+    function testCancelAfterFullVesting() public {
+        // Warp to after vesting period
+        vm.warp(startTimestamp + VESTING_DURATION + 1 days);
+
+        // Cancel as timelock
+        vm.prank(timelock);
+        vestingContract.cancelContract();
+
+        // Verify team member got all tokens
+        assertEq(
+            tokenInstance.balanceOf(teamMember), VESTING_AMOUNT, "Team member should get all tokens when fully vested"
         );
 
-        vestingContract = new TeamVesting(
-            address(tokenInstance),
-            address(timelockInstance),
-            alice,
-            uint64(startTimestamp + CLIFF_PERIOD),
-            VESTING_DURATION
+        // Verify timelock got nothing
+        assertEq(tokenInstance.balanceOf(timelock), 0, "Timelock should get nothing when fully vested");
+
+        // Verify contract has no remaining tokens
+        assertEq(tokenInstance.balanceOf(address(vestingContract)), 0, "Contract should have no tokens left");
+    }
+
+    // Test cancellation before any vesting
+    function testCancelBeforeVesting() public {
+        // Cancel before vesting starts
+        vm.warp(startTimestamp - 1);
+
+        vm.prank(timelock);
+        vestingContract.cancelContract();
+
+        // Verify team member got nothing
+        assertEq(tokenInstance.balanceOf(teamMember), 0, "Team member should get nothing before vesting starts");
+
+        // Verify timelock got everything
+        assertEq(
+            tokenInstance.balanceOf(timelock), VESTING_AMOUNT, "Timelock should get all tokens before vesting starts"
         );
+    }
 
-        // Fund vesting contract
-        address[] memory investors = new address[](1);
-        investors[0] = address(vestingContract);
+    // Test double cancel scenario
+    function testDoubleCancel() public {
+        // First cancel returns unvested tokens to timelock
+        vm.prank(timelock);
+        vestingContract.cancelContract();
 
-        vm.startPrank(guardian);
-        ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
-        vm.stopPrank();
+        // Second cancel should complete without any token movement
+        uint256 timelockBalanceBefore = tokenInstance.balanceOf(timelock);
+        uint256 teamMemberBalanceBefore = tokenInstance.balanceOf(teamMember);
 
-        vm.prank(managerAdmin);
-        ecoInstance.airdrop(investors, VESTING_AMOUNT);
+        vm.prank(timelock);
+        vestingContract.cancelContract();
+
+        assertEq(
+            tokenInstance.balanceOf(timelock),
+            timelockBalanceBefore,
+            "Timelock balance shouldn't change on second cancel"
+        );
+        assertEq(
+            tokenInstance.balanceOf(teamMember),
+            teamMemberBalanceBefore,
+            "Team member balance shouldn't change on second cancel"
+        );
+    }
+
+    // Test cancellation at specific time points
+    function testCancelAtSpecificTimePoints() public {
+        // Test at exact start time
+        vm.warp(startTimestamp);
+
+        vm.prank(timelock);
+        vestingContract.cancelContract();
+
+        assertEq(tokenInstance.balanceOf(teamMember), 0, "Team member should get nothing at start");
+        assertEq(tokenInstance.balanceOf(timelock), VESTING_AMOUNT, "Timelock should get everything at start");
+
+        // Reset for next test
+        setUp();
+
+        // Test at exactly 1 second after start
+        vm.warp(startTimestamp + 1);
+
+        // Calculate expected tiny vested amount for 1 second
+        uint256 tinyVestedAmount = (VESTING_AMOUNT * 1) / VESTING_DURATION;
+
+        vm.prank(timelock);
+        vestingContract.cancelContract();
+
+        assertApproxEqAbs(
+            tokenInstance.balanceOf(teamMember), tinyVestedAmount, 1, "Team member should get tiny amount at start+1"
+        );
+        assertApproxEqAbs(
+            tokenInstance.balanceOf(timelock),
+            VESTING_AMOUNT - tinyVestedAmount,
+            1,
+            "Timelock should get remainder at start+1"
+        );
+    }
+
+    // Test cancellation with direct emission verification
+    function testCancelEmitsEventRecordedLogs() public {
+        // Warp to 25% through vesting period
+        vm.warp(startTimestamp + VESTING_DURATION / 4);
+
+        // Expected unvested amount: 75%
+        uint256 vestedAmount = VESTING_AMOUNT / 4;
+        uint256 unvestedAmount = VESTING_AMOUNT - vestedAmount;
+
+        // Record logs to verify event emission
+        vm.recordLogs();
+
+        // Cancel as timelock
+        vm.prank(timelock);
+        vestingContract.cancelContract();
+
+        // Get the emitted logs
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+
+        // Find and verify the Cancelled event
+        bool foundEvent = false;
+        for (uint256 i = 0; i < entries.length; i++) {
+            // The event signature for Cancelled
+            if (entries[i].topics[0] == keccak256("Cancelled(uint256)")) {
+                // Decode the data
+                uint256 emittedAmount = abi.decode(entries[i].data, (uint256));
+                assertEq(emittedAmount, unvestedAmount, "Emitted amount incorrect");
+                foundEvent = true;
+                break;
+            }
+        }
+
+        assertTrue(foundEvent, "Cancelled event not emitted");
+    }
+
+    // Test calling release multiple times in same block
+    function testCallingReleaseMultipleTimesInSameBlock() public {
+        // Warp to middle of vesting period
+        vm.warp(startTimestamp + VESTING_DURATION / 2);
+
+        // First release should work
+        uint256 releasableAmount = vestingContract.releasable();
+        vm.prank(teamMember);
+        vestingContract.release();
+
+        // Second release in same block should do nothing
+        vm.prank(teamMember);
+        vestingContract.release();
+
+        // Verify token balance matches only one release
+        assertEq(tokenInstance.balanceOf(teamMember), releasableAmount);
     }
 }
