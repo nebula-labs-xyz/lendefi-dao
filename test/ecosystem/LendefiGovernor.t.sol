@@ -16,6 +16,9 @@ contract LendefiGovernorTest is BasicDeploy {
         address indexed caller, uint256 votingDelay, uint256 votingPeriod, uint256 proposalThreshold
     );
     event GnosisSafeUpdated(address indexed oldGnosisSafe, address indexed newGnosisSafe);
+    event UpgradeScheduled(
+        address indexed scheduler, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
+    );
 
     function setUp() public {
         vm.warp(365 days);
@@ -631,9 +634,39 @@ contract LendefiGovernorTest is BasicDeploy {
     function test_AuthorizeUpgrade() public {
         // upgrade Governor
         address proxy = address(govInstance);
-        vm.startPrank(gnosisSafe);
-        Upgrades.upgradeProxy(proxy, "LendefiGovernorV2.sol", "", gnosisSafe);
 
+        // First prepare the upgrade but don't apply it yet
+        Options memory opts = Options({
+            referenceContract: "LendefiGovernor.sol",
+            constructorData: "",
+            unsafeAllow: "",
+            unsafeAllowRenames: false,
+            unsafeSkipStorageCheck: false,
+            unsafeSkipAllChecks: false,
+            defender: DefenderOptions({
+                useDefenderDeploy: false,
+                skipVerifySourceCode: false,
+                relayerId: "",
+                salt: bytes32(0),
+                upgradeApprovalProcessId: ""
+            })
+        });
+
+        // Get the implementation address without upgrading
+        address newImpl = Upgrades.prepareUpgrade("LendefiGovernorV2.sol", opts);
+
+        vm.startPrank(gnosisSafe);
+
+        // Schedule the upgrade with our timelock mechanism
+        govInstance.scheduleUpgrade(newImpl);
+
+        // Wait for the timelock period to expire
+        vm.warp(block.timestamp + govInstance.UPGRADE_TIMELOCK_DURATION() + 1);
+
+        // Now perform the actual upgrade
+        govInstance.upgradeToAndCall(newImpl, "");
+
+        // Verify the upgrade was successful
         LendefiGovernorV2 govInstanceV2 = LendefiGovernorV2(payable(proxy));
         assertEq(govInstanceV2.uupsVersion(), 2);
         vm.stopPrank();
@@ -662,6 +695,157 @@ contract LendefiGovernorTest is BasicDeploy {
         assertEq(govInstance.DEFAULT_VOTING_DELAY(), 7200);
         assertEq(govInstance.DEFAULT_VOTING_PERIOD(), 50400);
         assertEq(govInstance.DEFAULT_PROPOSAL_THRESHOLD(), 20_000 ether);
+    }
+    // Add these tests to LendefiGovernor.t.sol
+
+    // Test: Schedule upgrade with zero address
+    function testRevert_ScheduleUpgradeZeroAddress() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
+        govInstance.scheduleUpgrade(address(0));
+    }
+
+    // Test: Schedule upgrade unauthorized
+    function testRevert_ScheduleUpgradeUnauthorized() public {
+        vm.prank(alice);
+        vm.expectRevert(abi.encodeWithSignature("UnauthorizedAccess()"));
+        govInstance.scheduleUpgrade(address(0x1234));
+    }
+
+    // Test: Upgrade timelock remaining with no upgrade scheduled
+    function testUpgradeTimelockRemainingNoUpgrade() public {
+        assertEq(govInstance.upgradeTimelockRemaining(), 0, "Should be 0 with no scheduled upgrade");
+    }
+
+    // Test: Upgrade timelock remaining after scheduling
+    function testUpgradeTimelockRemaining() public {
+        address newImplementation = address(0x1234);
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(newImplementation);
+
+        // Check remaining time right after scheduling
+        uint256 timelock = govInstance.UPGRADE_TIMELOCK_DURATION();
+        assertEq(govInstance.upgradeTimelockRemaining(), timelock, "Full timelock should remain");
+
+        // Warp forward 1 day and check again
+        vm.warp(block.timestamp + 1 days);
+        assertEq(govInstance.upgradeTimelockRemaining(), timelock - 1 days, "Should have 2 days remaining");
+
+        // Warp past timelock
+        vm.warp(block.timestamp + 2 days);
+        assertEq(govInstance.upgradeTimelockRemaining(), 0, "Should be 0 after timelock expires");
+    }
+
+    // Test: Attempt upgrade when timelock is active
+    function testRevert_UpgradeTimelockActive() public {
+        address newImplementation = address(0x1234);
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(newImplementation);
+
+        // Try to upgrade immediately
+        vm.prank(gnosisSafe);
+        uint256 remaining = govInstance.upgradeTimelockRemaining();
+        vm.expectRevert(abi.encodeWithSelector(LendefiGovernor.UpgradeTimelockActive.selector, remaining));
+
+        // Use low-level call to attempt upgrade
+        (bool success,) = address(govInstance).call(
+            abi.encodeWithSelector(0x3659cfe6, newImplementation) // upgradeTo(address)
+        );
+        assertFalse(success);
+    }
+
+    // Test: Attempt upgrade without scheduling
+    function testRevert_UpgradeNotScheduled() public {
+        address newImplementation = address(0x1234);
+
+        // Try to upgrade without scheduling
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSelector(LendefiGovernor.UpgradeNotScheduled.selector));
+
+        // Use low-level call to attempt upgrade
+        (bool success,) = address(govInstance).call(
+            abi.encodeWithSelector(0x3659cfe6, newImplementation) // upgradeTo(address)
+        );
+        assertFalse(success);
+    }
+
+    // Test: Attempt upgrade with implementation mismatch
+    function testRevert_ImplementationMismatch() public {
+        address scheduledImpl = address(0x1234);
+        address wrongImpl = address(0x5678);
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(scheduledImpl);
+
+        // Wait for timelock to expire
+        vm.warp(block.timestamp + govInstance.UPGRADE_TIMELOCK_DURATION() + 1);
+
+        // Try to upgrade with different implementation
+        vm.prank(gnosisSafe);
+        vm.expectRevert(
+            abi.encodeWithSelector(LendefiGovernor.ImplementationMismatch.selector, scheduledImpl, wrongImpl)
+        );
+
+        // Use low-level call to attempt upgrade
+        (bool success,) = address(govInstance).call(
+            abi.encodeWithSelector(0x3659cfe6, wrongImpl) // upgradeTo(address)
+        );
+        assertFalse(success);
+    }
+
+    // Test: Complete successful timelock upgrade process
+    function testSuccessfulTimelockUpgrade() public {
+        deployGovernorUpgrade();
+    }
+
+    // Test: Reschedule an upgrade
+    function testRescheduleUpgrade() public {
+        address firstImpl = address(0x1234);
+        address secondImpl = address(0x5678);
+
+        // Schedule first upgrade
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(firstImpl);
+
+        // Verify first implementation is scheduled
+        (address scheduledImpl,, bool exists) = govInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(scheduledImpl, firstImpl);
+
+        // Schedule second upgrade (should replace the first one)
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(secondImpl);
+
+        // Verify second implementation replaced the first
+        (scheduledImpl,, exists) = govInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(scheduledImpl, secondImpl, "Second implementation should replace first");
+    }
+
+    // Test: Schedule upgrade with proper permissions
+    function test_ScheduleUpgrade() public {
+        address newImplementation = address(0x1234);
+
+        vm.expectEmit(true, true, true, true);
+        emit UpgradeScheduled(
+            gnosisSafe,
+            newImplementation,
+            uint64(block.timestamp),
+            uint64(block.timestamp + govInstance.UPGRADE_TIMELOCK_DURATION())
+        );
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(newImplementation);
+
+        // Check the pending upgrade is properly set
+        (address impl, uint64 scheduledTime, bool exists) = govInstance.pendingUpgrade();
+        assertTrue(exists, "Upgrade should be scheduled");
+        assertEq(impl, newImplementation, "Implementation address should match");
+        assertEq(scheduledTime, block.timestamp, "Scheduled time should match current time");
     }
 
     function deployTimelock() internal {
