@@ -43,14 +43,14 @@ contract PartnerVestingTest is Test {
         startTime = uint64(block.timestamp);
 
         // Deploy vesting contract first without event verification
-        vesting = new PartnerVesting(address(token), timelock, partner, startTime, vestingDuration);
+        vesting = new PartnerVesting(address(token), partner, startTime, vestingDuration);
 
         // Fund the vesting contract
         token.mint(address(vesting), vestingAmount);
 
         // Verify initial state
         assertEq(vesting.owner(), partner);
-        assertEq(vesting._timelock(), timelock);
+
         assertEq(vesting._creator(), address(this));
         assertEq(vesting.start(), startTime);
         assertEq(vesting.duration(), vestingDuration);
@@ -64,16 +64,12 @@ contract PartnerVestingTest is Test {
     function testRevertConstructorZeroAddresses() public {
         // Test zero token address
         vm.expectRevert(IPARTNERVESTING.ZeroAddress.selector);
-        new PartnerVesting(address(0), timelock, partner, startTime, vestingDuration);
-
-        // Test zero timelock address
-        vm.expectRevert(IPARTNERVESTING.ZeroAddress.selector);
-        new PartnerVesting(address(token), address(0), partner, startTime, vestingDuration);
+        new PartnerVesting(address(0), partner, startTime, vestingDuration);
 
         // Test zero partner address (owner)
         // This comes from Ownable, not our custom error
         vm.expectRevert(abi.encodeWithSignature("OwnableInvalidOwner(address)", address(0)));
-        new PartnerVesting(address(token), timelock, address(0), startTime, vestingDuration);
+        new PartnerVesting(address(token), address(0), startTime, vestingDuration);
     }
 
     // Test releasing tokens after vesting begins
@@ -341,7 +337,7 @@ contract PartnerVestingTest is Test {
     // Test status after initialization and pre-funding
     function testInitialStateBeforeFunding() public {
         // Deploy a new vesting contract without funding
-        PartnerVesting newVesting = new PartnerVesting(address(token), timelock, partner, startTime, vestingDuration);
+        PartnerVesting newVesting = new PartnerVesting(address(token), partner, startTime, vestingDuration);
 
         // Check state
         assertEq(newVesting.releasable(), 0, "Releasable should be 0 without funding");
@@ -356,7 +352,7 @@ contract PartnerVestingTest is Test {
     function testVestingWithSpecialDurations() public {
         // Test with 1 day duration (very short)
         uint64 shortDuration = 1 days;
-        PartnerVesting shortVesting = new PartnerVesting(address(token), timelock, partner, startTime, shortDuration);
+        PartnerVesting shortVesting = new PartnerVesting(address(token), partner, startTime, shortDuration);
 
         // Fund it
         token.mint(address(shortVesting), vestingAmount);
@@ -369,7 +365,7 @@ contract PartnerVestingTest is Test {
 
         // Test with very long duration
         uint64 longDuration = 10 * 365 days; // 10 years
-        PartnerVesting longVesting = new PartnerVesting(address(token), timelock, partner, startTime, longDuration);
+        PartnerVesting longVesting = new PartnerVesting(address(token), partner, startTime, longDuration);
 
         // Fund it
         token.mint(address(longVesting), vestingAmount);
