@@ -17,10 +17,12 @@ contract InvestorVestingTest is BasicDeploy {
         tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
         uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
         uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
+        uint256 guardianBal = tokenInstance.balanceOf(guardian);
 
         assertEq(ecoBal, 22_000_000 ether);
-        assertEq(treasuryBal, 28_000_000 ether);
-        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
+        assertEq(treasuryBal, 27_400_000 ether);
+        assertEq(guardianBal, 600_000 ether);
+        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal + guardianBal);
 
         vestingContract = new InvestorVesting(
             address(tokenInstance),
@@ -31,9 +33,9 @@ contract InvestorVestingTest is BasicDeploy {
 
         address[] memory investors = new address[](1);
         investors[0] = address(vestingContract);
-
-        ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
         vm.stopPrank();
+        vm.prank(address(timelockInstance));
+        ecoInstance.grantRole(MANAGER_ROLE, managerAdmin);
         vm.prank(managerAdmin);
         ecoInstance.airdrop(investors, 200_000 ether); //put some tokens into vesting contract
     }
