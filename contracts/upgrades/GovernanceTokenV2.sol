@@ -35,16 +35,20 @@ contract GovernanceTokenV2 is
 
     /// @notice Token supply and distribution constants
     uint256 private constant INITIAL_SUPPLY = 50_000_000 ether;
-    uint256 private constant MAX_BRIDGE_AMOUNT = 20_000 ether;
-    uint256 private constant TREASURY_SHARE = 56;
-    uint256 private constant ECOSYSTEM_SHARE = 44;
+    uint256 private constant DEFAULT_MAX_BRIDGE_AMOUNT = 5_000 ether; // Reduced from 20,000
+    uint256 private constant TREASURY_SHARE = 27_400_000 ether;
+    uint256 private constant ECOSYSTEM_SHARE = 22_000_000 ether;
+    uint256 private constant DEPLOYER_SHARE = 600_000 ether; // 1.2% of initial supply to satisfy the Governor quorum
 
-    /// @dev AccessControl Pauser Role
+    /// @notice Upgrade timelock duration (in seconds)
+    uint256 private constant UPGRADE_TIMELOCK_DURATION = 3 days;
+
+    /// @dev AccessControl Role Constants
+    bytes32 internal constant TGE_ROLE = keccak256("TGE_ROLE");
     bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    /// @dev AccessControl Bridge Role
     bytes32 internal constant BRIDGE_ROLE = keccak256("BRIDGE_ROLE");
-    /// @dev AccessControl Upgrader Role
     bytes32 internal constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // ============ Storage Variables ============
 
@@ -56,7 +60,18 @@ contract GovernanceTokenV2 is
     uint32 public version;
     /// @dev tge initialized variable
     uint32 public tge;
-    uint256[50] private __gap;
+
+    /// @dev Upgrade timelock storage
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
+
+    UpgradeRequest public pendingUpgrade;
+
+    /// @dev Storage gap for future upgrades
+    uint256[48] private __gap;
 
     // ============ Events ============
 
@@ -87,6 +102,24 @@ contract GovernanceTokenV2 is
     event MaxBridgeUpdated(address indexed admin, uint256 oldMaxBridge, uint256 newMaxBridge);
 
     /**
+     * @dev Emitted when a bridge role is assigned
+     * @param admin The admin who set the role
+     * @param bridgeAddress The bridge address receiving the role
+     */
+    event BridgeRoleAssigned(address indexed admin, address indexed bridgeAddress);
+
+    /**
+     * @dev Emitted when an upgrade is scheduled
+     * @param sender The address that scheduled the upgrade
+     * @param implementation The new implementation address
+     * @param scheduledTime The time when the upgrade was scheduled
+     * @param effectiveTime The time when the upgrade can be executed
+     */
+    event UpgradeScheduled(
+        address indexed sender, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
+    );
+
+    /**
      * @dev Upgrade Event.
      * @param src sender address
      * @param implementation address
@@ -113,6 +146,15 @@ contract GovernanceTokenV2 is
     /// @dev Error thrown when addresses don't match expected values
     error InvalidAddress(address provided, string reason);
 
+    /// @dev Error thrown when trying to execute an upgrade too soon
+    error UpgradeTimelockActive(uint256 remainingTime);
+
+    /// @dev Error thrown when trying to execute an upgrade that wasn't scheduled
+    error UpgradeNotScheduled();
+
+    /// @dev Error thrown when trying to execute an upgrade with wrong implementation
+    error ImplementationMismatch(address expected, address provided);
+
     /// @dev Error thrown for general validation failures
     error ValidationFailed(string reason);
 
@@ -122,18 +164,20 @@ contract GovernanceTokenV2 is
     }
 
     receive() external payable {
-        revert("NO_ETHER_ACCEPTED");
+        revert ValidationFailed("NO_ETHER_ACCEPTED");
     }
+
     /**
      * @dev Initializes the UUPS contract.
      * @notice Sets up the initial state of the contract, including roles and token supplies.
      * @param guardian The address of the guardian (admin).
-     * @custom:requires The guardian address must not be zero.
+     * @param timelock The address of the timelock controller.
+     * @param multisig The address of the multisig wallet.
+     * @custom:requires The addresses must not be zero.
      * @custom:events-emits {Initialized} event.
-     * @custom:throws ZeroAddress if the guardian address is zero.
+     * @custom:throws ZeroAddress if any address is zero.
      */
-
-    function initializeUUPS(address guardian) external initializer {
+    function initializeUUPS(address guardian, address timelock, address multisig) external initializer {
         __ERC20_init("Lendefi DAO", "LEND");
         __ERC20Burnable_init();
         __ERC20Pausable_init();
@@ -143,13 +187,34 @@ contract GovernanceTokenV2 is
         __UUPSUpgradeable_init();
 
         if (guardian == address(0)) revert ZeroAddress();
+        if (timelock == address(0)) revert ZeroAddress();
+        if (multisig == address(0)) revert ZeroAddress();
 
-        _grantRole(DEFAULT_ADMIN_ROLE, guardian);
+        _grantRole(DEFAULT_ADMIN_ROLE, timelock);
+        _grantRole(TGE_ROLE, guardian);
         _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(UPGRADER_ROLE, multisig);
+        _grantRole(MANAGER_ROLE, timelock);
+
         initialSupply = INITIAL_SUPPLY;
-        maxBridge = MAX_BRIDGE_AMOUNT;
-        version++;
+        maxBridge = DEFAULT_MAX_BRIDGE_AMOUNT;
+
+        version = 1;
         emit Initialized(msg.sender);
+    }
+
+    /**
+     * @dev Sets the bridge address with BRIDGE_ROLE
+     * @param bridgeAddress The address of the bridge contract
+     * @custom:requires-role MANAGER_ROLE
+     * @custom:throws ZeroAddress if bridgeAddress is zero
+     */
+    function setBridgeAddress(address bridgeAddress) external onlyRole(MANAGER_ROLE) {
+        if (bridgeAddress == address(0)) revert ZeroAddress();
+
+        _grantRole(BRIDGE_ROLE, bridgeAddress);
+
+        emit BridgeRoleAssigned(msg.sender, bridgeAddress);
     }
 
     /**
@@ -163,21 +228,19 @@ contract GovernanceTokenV2 is
      * @custom:throws ZeroAddress if any address is zero.
      * @custom:throws TGEAlreadyInitialized if TGE was already initialized.
      */
-    function initializeTGE(address ecosystem, address treasury) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function initializeTGE(address ecosystem, address treasury) external onlyRole(TGE_ROLE) {
         if (ecosystem == address(0)) revert InvalidAddress(ecosystem, "Ecosystem address cannot be zero");
         if (treasury == address(0)) revert InvalidAddress(treasury, "Treasury address cannot be zero");
         if (tge > 0) revert TGEAlreadyInitialized();
 
         ++tge;
 
+        // Directly mint to target addresses instead of minting to this contract first
+        _mint(treasury, TREASURY_SHARE);
+        _mint(ecosystem, ECOSYSTEM_SHARE);
+        _mint(msg.sender, DEPLOYER_SHARE);
+
         emit TGE(initialSupply);
-        _mint(address(this), initialSupply);
-
-        uint256 maxTreasury = (initialSupply * TREASURY_SHARE) / 100;
-        uint256 maxEcosystem = (initialSupply * ECOSYSTEM_SHARE) / 100;
-
-        _transfer(address(this), treasury, maxTreasury);
-        _transfer(address(this), ecosystem, maxEcosystem);
     }
 
     /**
@@ -208,8 +271,7 @@ contract GovernanceTokenV2 is
      * @custom:requires-role BRIDGE_ROLE
      * @custom:requires Total supply must not exceed initialSupply
      * @custom:requires to address must not be zero
-     * @custom:requires amount must not be zero
-     * @custom:requires amount must not exceed maxBridge limit
+     * @custom:requires amount must not be zero or exceed maxBridge limit
      * @custom:events-emits {BridgeMint} event
      * @custom:throws ZeroAddress if recipient address is zero
      * @custom:throws ZeroAmount if amount is zero
@@ -238,21 +300,54 @@ contract GovernanceTokenV2 is
     /**
      * @dev Updates the maximum allowed bridge amount per transaction
      * @param newMaxBridge New maximum bridge amount
-     * @notice Only callable by admin role
-     * @custom:requires-role DEFAULT_ADMIN_ROLE
-     * @custom:requires New amount must be greater than zero
+     * @notice Only callable by manager role
+     * @custom:requires-role MANAGER_ROLE
+     * @custom:requires New amount must be greater than zero and less than 1% of total supply
      * @custom:events-emits {MaxBridgeUpdated} event
      * @custom:throws ZeroAmount if newMaxBridge is zero
+     * @custom:throws ValidationFailed if bridge amount is too high
      */
-    function updateMaxBridgeAmount(uint256 newMaxBridge) external onlyRole(DEFAULT_ADMIN_ROLE) {
+    function updateMaxBridgeAmount(uint256 newMaxBridge) external onlyRole(MANAGER_ROLE) {
         if (newMaxBridge == 0) revert ZeroAmount();
-        // Add a reasonable cap, e.g., 10% of initial supply
+        // Add a reasonable cap, e.g., 1% of initial supply
         if (newMaxBridge > initialSupply / 100) revert ValidationFailed("Bridge amount too high");
 
         uint256 oldMaxBridge = maxBridge;
         maxBridge = newMaxBridge;
 
         emit MaxBridgeUpdated(msg.sender, oldMaxBridge, newMaxBridge);
+    }
+
+    /**
+     * @dev Schedules an upgrade to a new implementation
+     * @param newImplementation Address of the new implementation
+     * @notice Only callable by an address with UPGRADER_ROLE
+     * @custom:requires-role UPGRADER_ROLE
+     * @custom:events-emits {UpgradeScheduled} event
+     * @custom:throws ZeroAddress if newImplementation is zero
+     */
+    function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) {
+        if (newImplementation == address(0)) revert ZeroAddress();
+
+        uint64 currentTime = uint64(block.timestamp);
+        uint64 effectiveTime = currentTime + uint64(UPGRADE_TIMELOCK_DURATION);
+
+        pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
+
+        emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @dev Returns the remaining time before a scheduled upgrade can be executed
+     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     */
+    function upgradeTimelockRemaining() external view returns (uint256) {
+        if (!pendingUpgrade.exists) return 0;
+
+        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
+        if (block.timestamp >= deadline) return 0;
+
+        return deadline - block.timestamp;
     }
 
     // The following functions are overrides required by Solidity.
@@ -269,10 +364,35 @@ contract GovernanceTokenV2 is
         super._update(from, to, value);
     }
 
-    /// @inheritdoc UUPSUpgradeable
+    /**
+     * @dev Internal authorization for contract upgrades with timelock enforcement
+     * @param newImplementation Address of the new implementation contract
+     * @custom:requires-role UPGRADER_ROLE (enforced by the function modifier)
+     * @custom:requires Upgrade must be scheduled and timelock must be expired
+     * @custom:throws UpgradeNotScheduled if no upgrade was scheduled
+     * @custom:throws UpgradeTimelockActive if timelock period hasn't passed
+     */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
-        if (newImplementation == address(0)) revert ZeroAddress();
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+
+        if (pendingUpgrade.implementation != newImplementation) {
+            revert ImplementationMismatch(pendingUpgrade.implementation, newImplementation);
+        }
+
+        uint256 timeElapsed = block.timestamp - pendingUpgrade.scheduledTime;
+        if (timeElapsed < UPGRADE_TIMELOCK_DURATION) {
+            revert UpgradeTimelockActive(UPGRADE_TIMELOCK_DURATION - timeElapsed);
+        }
+
+        // Clear the scheduled upgrade
+        delete pendingUpgrade;
+
+        // Increment version
         ++version;
+
+        // Emit the upgrade event
         emit Upgrade(msg.sender, newImplementation);
     }
 }
