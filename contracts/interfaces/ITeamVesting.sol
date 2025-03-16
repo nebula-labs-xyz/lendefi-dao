@@ -69,5 +69,5 @@ interface ITEAMVESTING {
      *
      * Refund the remainder to the timelock
      */
-    function cancelContract() external;
+    function cancelContract() external returns (uint256 remainder);
 }
