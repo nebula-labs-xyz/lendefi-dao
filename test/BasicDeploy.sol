@@ -80,29 +80,6 @@ contract BasicDeploy is Test {
     WETHPriceConsumerV3 internal oracleInstance;
     IERC20 usdc = IERC20(0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48);
 
-    // function deployTokenUpgrade() internal {
-    //     if (address(timelockInstance) == address(0)) {
-    //         _deployTimelock();
-    //     }
-    //     // token deploy
-    //     bytes memory data =
-    //         abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance), gnosisSafe));
-    //     address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
-    //     tokenInstance = GovernanceToken(proxy);
-    //     address tokenImplementation = Upgrades.getImplementationAddress(proxy);
-    //     assertFalse(address(tokenInstance) == tokenImplementation);
-    //     assertTrue(tokenInstance.hasRole(UPGRADER_ROLE, gnosisSafe) == true);
-
-    //     vm.startPrank(gnosisSafe);
-    //     Upgrades.upgradeProxy(proxy, "GovernanceTokenV2.sol", "", guardian);
-    //     vm.stopPrank();
-
-    //     address implAddressV2 = Upgrades.getImplementationAddress(proxy);
-    //     GovernanceTokenV2 instanceV2 = GovernanceTokenV2(proxy);
-    //     assertEq(instanceV2.version(), 2);
-    //     assertFalse(implAddressV2 == tokenImplementation);
-    //     assertTrue(instanceV2.hasRole(UPGRADER_ROLE, gnosisSafe) == true);
-    // }
     function deployTokenUpgrade() internal {
         if (address(timelockInstance) == address(0)) {
             _deployTimelock();
@@ -234,24 +211,57 @@ contract BasicDeploy is Test {
     }
 
     function deployGovernorUpgrade() internal {
+        vm.warp(365 days);
         _deployTimelock();
         _deployToken();
 
         // deploy Governor
-        bytes memory data2 = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockInstance, gnosisSafe));
-        address payable proxy2 = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data2));
-        LendefiGovernor govInstanceV1 = LendefiGovernor(proxy2);
-        address govImplAddressV1 = Upgrades.getImplementationAddress(proxy2);
-        assertFalse(address(govInstanceV1) == govImplAddressV1);
-        assertEq(govInstanceV1.uupsVersion(), 1);
+        bytes memory data = abi.encodeCall(LendefiGovernor.initialize, (tokenInstance, timelockInstance, gnosisSafe));
+        address payable proxy = payable(Upgrades.deployUUPSProxy("LendefiGovernor.sol", data));
+        govInstance = LendefiGovernor(proxy);
+        address govImplAddressV1 = Upgrades.getImplementationAddress(proxy);
+        assertFalse(address(govInstance) == govImplAddressV1);
+        assertEq(govInstance.uupsVersion(), 1);
 
-        // upgrade Governor
-        Upgrades.upgradeProxy(proxy2, "LendefiGovernorV2.sol", "", gnosisSafe);
-        address govImplAddressV2 = Upgrades.getImplementationAddress(proxy2);
+        // Verify gnosis multisig has the required role
+        assertTrue(govInstance.gnosisSafe() == gnosisSafe, "Gnosis Safe address not set correctly");
 
-        LendefiGovernorV2 govInstanceV2 = LendefiGovernorV2(proxy2);
-        assertEq(govInstanceV2.uupsVersion(), 2);
-        assertFalse(govImplAddressV2 == govImplAddressV1);
+        // Create options struct for the implementation
+        Options memory opts = Options({
+            referenceContract: "LendefiGovernor.sol",
+            constructorData: "",
+            unsafeAllow: "",
+            unsafeAllowRenames: false,
+            unsafeSkipStorageCheck: false,
+            unsafeSkipAllChecks: false,
+            defender: DefenderOptions({
+                useDefenderDeploy: false,
+                skipVerifySourceCode: false,
+                relayerId: "",
+                salt: bytes32(0),
+                upgradeApprovalProcessId: ""
+            })
+        });
+
+        // Deploy the implementation without upgrading
+        address newImpl = Upgrades.prepareUpgrade("LendefiGovernorV2.sol", opts);
+
+        // Schedule the upgrade with that exact address
+        vm.startPrank(gnosisSafe);
+        govInstance.scheduleUpgrade(newImpl);
+
+        // Fast forward past the timelock period (3 days for Governor)
+        vm.warp(block.timestamp + 3 days + 1);
+
+        ITransparentUpgradeableProxy(proxy).upgradeToAndCall(newImpl, "");
+        vm.stopPrank();
+
+        // Verification
+        address govImplAddressV2 = Upgrades.getImplementationAddress(proxy);
+        LendefiGovernorV2 govInstanceV2 = LendefiGovernorV2(proxy);
+        assertEq(govInstanceV2.uupsVersion(), 2, "Version not incremented to 2");
+        assertFalse(govImplAddressV2 == govImplAddressV1, "Implementation address didn't change");
+        assertTrue(govInstanceV2.gnosisSafe() == gnosisSafe, "Lost gnosisSafe address");
     }
 
     function deployIMUpgrade() internal {
