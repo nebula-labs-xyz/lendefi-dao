@@ -68,11 +68,11 @@ contract TeamVestingTest is Test {
     // Test constructor validations
     function testRevertConstructorZeroAddresses() public {
         // Test zero token address
-        vm.expectRevert(TeamVesting.ZeroAddress.selector);
+        vm.expectRevert(ITEAMVESTING.ZeroAddress.selector);
         new TeamVesting(address(0), timelock, teamMember, startTimestamp, VESTING_DURATION);
 
         // Test zero timelock address
-        vm.expectRevert(TeamVesting.ZeroAddress.selector);
+        vm.expectRevert(ITEAMVESTING.ZeroAddress.selector);
         new TeamVesting(address(tokenInstance), address(0), teamMember, startTimestamp, VESTING_DURATION);
 
         // Test zero beneficiary address (owner)
@@ -180,11 +180,11 @@ contract TeamVestingTest is Test {
     // Test revert on unauthorized cancellation
     function testRevertUnauthorizedCancel() public {
         vm.prank(alice);
-        vm.expectRevert(TeamVesting.Unauthorized.selector);
+        vm.expectRevert(ITEAMVESTING.Unauthorized.selector);
         vestingContract.cancelContract();
 
         vm.prank(teamMember);
-        vm.expectRevert(TeamVesting.Unauthorized.selector);
+        vm.expectRevert(ITEAMVESTING.Unauthorized.selector);
         vestingContract.cancelContract();
     }
 
