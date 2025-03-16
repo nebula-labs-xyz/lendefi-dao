@@ -100,17 +100,17 @@ contract TreasuryBasicTest is Test {
         // Test with zero guardian
         bytes memory data =
             abi.encodeCall(Treasury.initialize, (address(0), timelock, multisig, startOffset, vestingDuration));
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with zero timelock
         data = abi.encodeCall(Treasury.initialize, (guardian, address(0), multisig, startOffset, vestingDuration));
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with zero multisig
         data = abi.encodeCall(Treasury.initialize, (guardian, timelock, address(0), startOffset, vestingDuration));
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with invalid duration
@@ -198,11 +198,11 @@ contract TreasuryBasicTest is Test {
 
         // Test with invalid parameters
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryProxy.release(address(0), 1 ether);
 
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        vm.expectRevert(ITREASURY.ZeroAmount.selector);
         treasuryProxy.release(recipient, 0);
     }
 
@@ -233,15 +233,15 @@ contract TreasuryBasicTest is Test {
 
         // Test with invalid parameters
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryProxy.release(address(0), recipient, 100e18);
 
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryProxy.release(address(tokenProxy), address(0), 100e18);
 
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        vm.expectRevert(ITREASURY.ZeroAmount.selector);
         treasuryProxy.release(address(tokenProxy), recipient, 0);
     }
 
@@ -320,53 +320,61 @@ contract TreasuryBasicTest is Test {
         );
     }
 
-    // Test emergency withdraw
     function testEmergencyWithdrawETH() public {
-        uint256 amount = 10 ether;
         uint256 initialBalance = timelock.balance;
 
         vm.prank(timelock);
         vm.expectEmit(true, true, true, true);
-        emit EmergencyWithdrawal(ethereum, timelock, amount);
-        treasuryProxy.emergencyWithdraw(ethereum, amount);
+        emit EmergencyWithdrawal(ethereum, timelock, address(treasuryProxy).balance);
+        treasuryProxy.emergencyWithdrawEther();
 
-        assertEq(timelock.balance, initialBalance + amount, "ETH should be sent to timelock");
-
-        // Try to withdraw more than available
-        vm.prank(timelock);
-        vm.expectRevert(abi.encodeWithSelector(ITREASURY.InsufficientBalance.selector, 200 ether, 90 ether));
-        treasuryProxy.emergencyWithdraw(ethereum, 200 ether);
+        // Verify all ETH was sent to timelock
+        assertEq(timelock.balance, initialBalance + 100 ether, "ETH should be sent to timelock");
+        assertEq(address(treasuryProxy).balance, 0, "Treasury should have no ETH left");
 
         // Non-manager should not be able to withdraw
+        vm.deal(address(treasuryProxy), 1 ether);
         vm.prank(alice);
         vm.expectRevert(
             abi.encodeWithSelector(
                 bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), alice, MANAGER_ROLE
             )
         );
-        treasuryProxy.emergencyWithdraw(ethereum, 1 ether);
+        treasuryProxy.emergencyWithdrawEther();
 
-        // Zero amount should revert
+        // Zero balance should revert
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
-        treasuryProxy.emergencyWithdraw(ethereum, 0);
+        treasuryProxy.emergencyWithdrawEther();
+
+        vm.prank(timelock);
+        vm.expectRevert(ITREASURY.ZeroBalance.selector);
+        treasuryProxy.emergencyWithdrawEther();
     }
 
-    // Test emergency withdraw for tokens
-    function testEmergencyWithdrawTokens() public {
-        uint256 amount = 100_000e18;
+    function testRevert_EmergencyWithdrawTokens() public {
+        uint256 initialBalance = tokenProxy.balanceOf(timelock);
+        uint256 treasuryBalance = tokenProxy.balanceOf(address(treasuryProxy));
 
         vm.prank(timelock);
         vm.expectEmit(true, true, true, true);
-        emit EmergencyWithdrawal(address(tokenProxy), timelock, amount);
-        treasuryProxy.emergencyWithdraw(address(tokenProxy), amount);
+        emit EmergencyWithdrawal(address(tokenProxy), timelock, treasuryBalance);
+        treasuryProxy.emergencyWithdrawToken(address(tokenProxy));
 
-        assertEq(tokenProxy.balanceOf(timelock), amount, "Tokens should be sent to timelock");
+        assertEq(tokenProxy.balanceOf(timelock), initialBalance + treasuryBalance, "Tokens should be sent to timelock");
+        assertEq(tokenProxy.balanceOf(address(treasuryProxy)), 0, "Treasury should have no tokens left");
 
-        // Try to withdraw more than available
+        // Transfer some tokens back for additional testing
         vm.prank(timelock);
-        vm.expectRevert(abi.encodeWithSelector(ITREASURY.InsufficientBalance.selector, 1_000_000e18, 900_000e18));
-        treasuryProxy.emergencyWithdraw(address(tokenProxy), 1_000_000e18);
+        tokenProxy.transfer(address(treasuryProxy), 100_000e18);
+
+        // Non-manager should not be able to withdraw
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                bytes4(keccak256("AccessControlUnauthorizedAccount(address,bytes32)")), alice, MANAGER_ROLE
+            )
+        );
+        vm.prank(alice);
+        treasuryProxy.emergencyWithdrawToken(address(tokenProxy));
     }
 
     // Test receive function
@@ -447,7 +455,7 @@ contract TreasuryBasicTest is Test {
 
         // Zero address should revert
         vm.prank(multisig);
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryProxy.scheduleUpgrade(address(0));
 
         // Test upgrade without scheduling
@@ -523,10 +531,76 @@ contract TreasuryBasicTest is Test {
         treasuryProxy.initialize(guardian, timelock, multisig, startOffset, vestingDuration);
     }
 
-    function testEmergencyWithdrawWithZeroToken() public {
+    function testRevert_EmergencyWithdrawWithZeroToken() public {
         vm.prank(timelock);
-        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
-        treasuryProxy.emergencyWithdraw(address(0), 1 ether);
+        vm.expectRevert(ITREASURY.ZeroAddress.selector);
+        treasuryProxy.emergencyWithdrawToken(address(0));
+    }
+
+    function testRevert_EmergencyWithdrawTokenZeroBalance() public {
+        // Deploy a new token that the treasury doesn't have any balance of
+        TokenMock emptyToken = new TokenMock("Empty Token", "EMPTY");
+
+        vm.prank(timelock);
+        vm.expectRevert(ITREASURY.ZeroBalance.selector);
+        treasuryProxy.emergencyWithdrawToken(address(emptyToken));
+    }
+
+    function testEmergencyWithdrawWhenPaused() public {
+        // Pause the contract
+        vm.prank(guardian);
+        treasuryProxy.pause();
+
+        // Emergency withdraw should still work when paused
+        uint256 balance = address(treasuryProxy).balance;
+
+        vm.prank(timelock);
+        treasuryProxy.emergencyWithdrawEther();
+
+        assertEq(address(treasuryProxy).balance, 0, "Treasury should have no ETH left");
+        assertEq(timelock.balance, balance, "Timelock should receive the ETH");
+
+        // Token withdrawal should also work when paused
+        tokenProxy.mint(timelock, 1000e18); // Add this line to mint tokens to timelock
+
+        vm.prank(timelock);
+        tokenProxy.transfer(address(treasuryProxy), 1000e18);
+
+        vm.prank(timelock);
+        treasuryProxy.emergencyWithdrawToken(address(tokenProxy));
+
+        assertEq(tokenProxy.balanceOf(address(treasuryProxy)), 0, "Treasury should have no tokens left");
+    }
+
+    function testMultipleEmergencyWithdrawals() public {
+        // First withdraw all ETH
+        vm.prank(timelock);
+        treasuryProxy.emergencyWithdrawEther();
+
+        // Add some ETH back to the contract
+        vm.deal(address(treasuryProxy), 5 ether);
+
+        // Withdraw again
+        vm.prank(timelock);
+        treasuryProxy.emergencyWithdrawEther();
+
+        // Verify all ETH is gone
+        assertEq(address(treasuryProxy).balance, 0, "Treasury should have no ETH left");
+
+        // Similar test with tokens
+        vm.prank(timelock);
+        treasuryProxy.emergencyWithdrawToken(address(tokenProxy));
+
+        // Transfer tokens back
+        vm.prank(timelock);
+        tokenProxy.transfer(address(treasuryProxy), 500e18);
+
+        // Withdraw again
+        vm.prank(timelock);
+        treasuryProxy.emergencyWithdrawToken(address(tokenProxy));
+
+        // Verify all tokens are gone
+        assertEq(tokenProxy.balanceOf(address(treasuryProxy)), 0, "Treasury should have no tokens left");
     }
 
     function testVestingAtExactStartTime() public {
