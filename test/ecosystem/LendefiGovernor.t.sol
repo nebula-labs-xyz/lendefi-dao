@@ -42,8 +42,8 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: RightOwner
-    function testRightOwner() public {
-        assertTrue(govInstance.owner() == gnosisSafe);
+    function test_RightOwner() public {
+        assertTrue(govInstance.hasRole(DEFAULT_ADMIN_ROLE, address(timelockInstance)) == true);
     }
 
     // Test: CreateProposal
@@ -463,112 +463,6 @@ contract LendefiGovernorTest is BasicDeploy {
         assertEq(threshold, 20000e18);
     }
 
-    //Test: InitialOwner
-    function testInitialOwner() public {
-        assertEq(govInstance.owner(), gnosisSafe);
-        assertEq(govInstance.pendingOwner(), address(0));
-    }
-
-    //Test: TransferOwnership
-    function test_TransferOwnership() public {
-        vm.prank(gnosisSafe);
-        govInstance.transferOwnership(alice);
-
-        // Check pending owner is set
-        assertEq(govInstance.pendingOwner(), alice);
-        // Check current owner hasn't changed
-        assertEq(govInstance.owner(), gnosisSafe);
-        vm.prank(alice);
-        govInstance.acceptOwnership();
-        assertEq(govInstance.owner(), alice);
-    }
-
-    //Test: TransferOwnershipUnauthorized
-    function testTransferOwnershipUnauthorized() public {
-        // Try to transfer ownership from non-owner account
-        vm.prank(address(0x9999));
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", address(0x9999)));
-        govInstance.transferOwnership(alice);
-    }
-
-    // Test: AcceptOwnership
-    function testAcceptOwnership() public {
-        // Set up pending ownership transfer
-        vm.prank(gnosisSafe);
-        govInstance.transferOwnership(alice);
-
-        // Accept ownership as new owner
-        vm.prank(alice);
-        govInstance.acceptOwnership();
-
-        // Verify ownership changed
-        assertEq(govInstance.owner(), alice);
-        assertEq(govInstance.pendingOwner(), address(0));
-    }
-
-    //Test: AcceptOwnershipUnauthorized
-    function testAcceptOwnershipUnauthorized() public {
-        // Set up pending ownership transfer
-        vm.prank(gnosisSafe);
-        govInstance.transferOwnership(alice);
-
-        // Try to accept ownership from unauthorized account
-        address unauthorized = address(0x9999);
-        vm.prank(unauthorized);
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", unauthorized));
-        govInstance.acceptOwnership();
-    }
-
-    // Test: CancelTransferOwnership
-    function testCancelTransferOwnership() public {
-        // Set up pending ownership transfer
-        vm.prank(gnosisSafe);
-        govInstance.transferOwnership(alice);
-
-        // Cancel transfer by setting pending owner to zero address
-        vm.prank(gnosisSafe);
-        govInstance.transferOwnership(address(0));
-
-        // Verify pending owner is cleared
-        assertEq(govInstance.pendingOwner(), address(0));
-        // Verify current owner hasn't changed
-        assertEq(govInstance.owner(), gnosisSafe);
-    }
-
-    // Test: Ownership Transfer
-    function testOwnershipTransfer() public {
-        // Transfer ownership to a new address
-        address newOwner = address(0x123);
-        vm.prank(gnosisSafe);
-        govInstance.transferOwnership(newOwner);
-
-        // Verify the new owner
-        vm.prank(newOwner);
-        govInstance.acceptOwnership();
-        assertEq(govInstance.owner(), newOwner);
-
-        // Attempt unauthorized ownership transfer and expect a revert
-        vm.startPrank(address(0x9999991));
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", address(0x9999991)));
-        govInstance.transferOwnership(alice);
-        vm.stopPrank();
-    }
-
-    // Test: Ownership Renouncement
-    function testOwnershipRenouncement() public {
-        // Renounce ownership
-        vm.prank(gnosisSafe);
-        govInstance.renounceOwnership();
-
-        // Verify that the owner is set to the zero address
-        assertEq(govInstance.owner(), address(0));
-
-        // Attempt unauthorized ownership renouncement and expect a revert
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", alice));
-        govInstance.renounceOwnership();
-    }
-
     // Test: RevertDeployGovernor
     function testRevertDeployGovernorERC1967Proxy() public {
         TimelockControllerUpgradeable timelockContract;
@@ -585,49 +479,6 @@ contract LendefiGovernorTest is BasicDeploy {
         // Try to deploy proxy with zero address timelock
         ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), data);
         assertFalse(address(proxy) == address(implementation));
-    }
-
-    // Test: GnosisSafe address after initialization
-    function testGnosisSafeInitialization() public {
-        assertEq(govInstance.gnosisSafe(), gnosisSafe);
-    }
-
-    // Test: Update gnosisSafe address
-    function testUpdateGnosisSafe() public {
-        address oldGnosisSafe = govInstance.gnosisSafe();
-        address newGnosisSafe = address(0x123);
-
-        vm.prank(gnosisSafe);
-        govInstance.updateGnosisSafe(newGnosisSafe);
-
-        assertEq(govInstance.gnosisSafe(), newGnosisSafe);
-        assertNotEq(govInstance.gnosisSafe(), oldGnosisSafe);
-    }
-
-    // Test: Update gnosisSafe revert on zero address
-    function testRevertUpdateGnosisSafeZeroAddress() public {
-        vm.prank(gnosisSafe);
-        vm.expectRevert(abi.encodeWithSignature("ZeroAddress()"));
-        govInstance.updateGnosisSafe(address(0));
-    }
-
-    // Test: Update gnosisSafe unauthorized
-    function testRevertUpdateGnosisSafeUnauthorized() public {
-        vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSignature("UnauthorizedAccess()"));
-        govInstance.updateGnosisSafe(address(0x123));
-    }
-
-    // Test: GnosisSafeUpdated event emission
-    function testGnosisSafeUpdatedEvent() public {
-        address oldGnosisSafe = gnosisSafe;
-        address newGnosisSafe = address(0x123);
-
-        vm.expectEmit(true, true, false, false);
-        emit GnosisSafeUpdated(oldGnosisSafe, newGnosisSafe);
-
-        vm.prank(gnosisSafe);
-        govInstance.updateGnosisSafe(newGnosisSafe);
     }
 
     // Test: _authorizeUpgrade with gnosisSafe permission
@@ -661,7 +512,7 @@ contract LendefiGovernorTest is BasicDeploy {
         govInstance.scheduleUpgrade(newImpl);
 
         // Wait for the timelock period to expire
-        vm.warp(block.timestamp + govInstance.UPGRADE_TIMELOCK_DURATION() + 1);
+        vm.warp(block.timestamp + 3 days + 1);
 
         // Now perform the actual upgrade
         govInstance.upgradeToAndCall(newImpl, "");
@@ -673,16 +524,16 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: _authorizeUpgrade unauthorized
+    // Test: _authorizeUpgrade unauthorized
     function testRevert_UpgradeUnauthorized() public {
         // Create a new implementation contract directly
         LendefiGovernor newImplementation = new LendefiGovernor();
 
-        // Try to call the upgrade function directly as an unauthorized user
+        // Update to use standard AccessControlUnauthorizedAccount error
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, UPGRADER_ROLE);
+        vm.expectRevert(expError);
         vm.prank(alice);
-
-        // Need to use the selector directly since UUPSUpgradeable doesn't expose upgradeTo
-        vm.expectRevert(abi.encodeWithSignature("UnauthorizedAccess()"));
-
         // Use a low-level call with the correct function selector
         (bool success,) = address(govInstance).call(
             abi.encodeWithSelector(0x3659cfe6, address(newImplementation)) // upgradeTo(address)
@@ -696,7 +547,6 @@ contract LendefiGovernorTest is BasicDeploy {
         assertEq(govInstance.DEFAULT_VOTING_PERIOD(), 50400);
         assertEq(govInstance.DEFAULT_PROPOSAL_THRESHOLD(), 20_000 ether);
     }
-    // Add these tests to LendefiGovernor.t.sol
 
     // Test: Schedule upgrade with zero address
     function testRevert_ScheduleUpgradeZeroAddress() public {
@@ -707,8 +557,10 @@ contract LendefiGovernorTest is BasicDeploy {
 
     // Test: Schedule upgrade unauthorized
     function testRevert_ScheduleUpgradeUnauthorized() public {
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, UPGRADER_ROLE);
         vm.prank(alice);
-        vm.expectRevert(abi.encodeWithSignature("UnauthorizedAccess()"));
+        vm.expectRevert(expError);
         govInstance.scheduleUpgrade(address(0x1234));
     }
 
@@ -798,7 +650,24 @@ contract LendefiGovernorTest is BasicDeploy {
         assertFalse(success);
     }
 
+    function test_UpgradeTimelockPeriod() public {
+        address newImplementation = address(0x1234);
+
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(newImplementation);
+
+        assertEq(govInstance.upgradeTimelockRemaining(), 3 days);
+
+        // Move forward one day
+        vm.warp(block.timestamp + 1 days);
+        assertEq(govInstance.upgradeTimelockRemaining(), 2 days);
+
+        // Move past timelock
+        vm.warp(block.timestamp + 2 days);
+        assertEq(govInstance.upgradeTimelockRemaining(), 0);
+    }
     // Test: Complete successful timelock upgrade process
+
     function testSuccessfulTimelockUpgrade() public {
         deployGovernorUpgrade();
     }
