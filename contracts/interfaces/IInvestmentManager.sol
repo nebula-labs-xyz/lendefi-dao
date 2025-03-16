@@ -378,11 +378,9 @@ interface IINVMANAGER {
     error AmountAllocationMismatch(uint256 provided, uint256 required);
 
     /**
-     * @dev Error thrown when balance is insufficient
-     * @param requested Requested amount
-     * @param available Available amount
+     * @dev Error thrown when attempting operations with zero balance
      */
-    error InsufficientBalance(uint256 requested, uint256 available);
+    error ZeroBalance();
 
     // ============ Function Declarations ============
 
@@ -416,9 +414,13 @@ interface IINVMANAGER {
     /**
      * @dev Executes an emergency withdrawal
      * @param token Address of the token to withdraw (0xEeee... for ETH)
-     * @param amount Amount to withdraw
      */
-    function emergencyWithdraw(address token, uint256 amount) external;
+    function emergencyWithdrawToken(address token) external;
+
+    /**
+     * @dev Executes an emergency withdrawal
+     */
+    function emergencyWithdrawEther() external;
 
     /**
      * @dev Creates a new investment round
