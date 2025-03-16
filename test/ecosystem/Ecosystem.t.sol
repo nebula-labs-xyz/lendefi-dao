@@ -8,6 +8,7 @@ import {Ecosystem} from "../../contracts/ecosystem/Ecosystem.sol";
 import {IECOSYSTEM} from "../../contracts/interfaces/IEcosystem.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {IAccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+import {TokenMock} from "../../contracts/mock/TokenMock.sol";
 
 contract EcosystemTest is BasicDeploy {
     event Burn(address indexed burner, uint256 amount);
@@ -762,18 +763,20 @@ contract EcosystemTest is BasicDeploy {
     }
 
     // ============ Emergency Withdrawal Tests ============
-
-    function testEmergencyWithdraw() public {
+    function testEmergencyWithdrawToken() public {
         // Get initial balance of timelock
         uint256 initialBalance = tokenInstance.balanceOf(address(timelockInstance));
-        uint256 withdrawAmount = 1000 ether;
+
+        // Get current balance of ecosystem contract
+        uint256 ecoBalance = tokenInstance.balanceOf(address(ecoInstance));
+        assertGt(ecoBalance, 0, "Ecosystem should have tokens");
 
         // Record events
         vm.recordLogs();
 
         // Execute emergency withdrawal
         vm.prank(address(timelockInstance)); // timelockInstance has MANAGER_ROLE
-        ecoInstance.emergencyWithdraw(address(tokenInstance), withdrawAmount);
+        ecoInstance.emergencyWithdrawToken(address(tokenInstance));
 
         // Verify event emission
         Vm.Log[] memory entries = vm.getRecordedLogs();
@@ -782,30 +785,58 @@ contract EcosystemTest is BasicDeploy {
         // Verify tokens were sent to timelock
         assertEq(
             tokenInstance.balanceOf(address(timelockInstance)),
-            initialBalance + withdrawAmount,
-            "Tokens not correctly sent to timelock"
+            initialBalance + ecoBalance,
+            "All tokens not correctly sent to timelock"
         );
+
+        // Verify ecosystem has no tokens left
+        assertEq(tokenInstance.balanceOf(address(ecoInstance)), 0, "Ecosystem should have no tokens left");
     }
 
-    function testRevertEmergencyWithdrawUnauthorized() public {
+    function testRevertEmergencyWithdrawTokenUnauthorized() public {
         bytes memory expError =
             abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, MANAGER_ROLE);
 
         vm.prank(alice); // alice doesn't have MANAGER_ROLE
         vm.expectRevert(expError);
-        ecoInstance.emergencyWithdraw(address(tokenInstance), 1000 ether);
+        ecoInstance.emergencyWithdrawToken(address(tokenInstance));
     }
 
-    function testRevertEmergencyWithdrawZeroAddress() public {
+    function testRevertEmergencyWithdrawTokenZeroAddress() public {
         vm.prank(address(timelockInstance));
         vm.expectRevert(abi.encodeWithSignature("InvalidAddress()"));
-        ecoInstance.emergencyWithdraw(address(0), 1000 ether);
+        ecoInstance.emergencyWithdrawToken(address(0));
     }
 
-    function testRevertEmergencyWithdrawZeroAmount() public {
+    function testRevertEmergencyWithdrawTokenZeroBalance() public {
+        // Create a new mock token that the ecosystem doesn't have any balance of
+        TokenMock newToken = new TokenMock("Test Token", "TEST");
+
         vm.prank(address(timelockInstance));
-        vm.expectRevert(abi.encodeWithSignature("InvalidAmount(uint256)", 0));
-        ecoInstance.emergencyWithdraw(address(tokenInstance), 0);
+        vm.expectRevert(abi.encodeWithSignature("ZeroBalance()"));
+        ecoInstance.emergencyWithdrawToken(address(newToken));
+    }
+
+    // Test emergency withdrawal when contract is paused
+    function testEmergencyWithdrawTokenWhenPaused() public {
+        // Pause the contract
+        vm.prank(guardian);
+        ecoInstance.pause();
+
+        uint256 ecoBalance = tokenInstance.balanceOf(address(ecoInstance));
+        uint256 timelockInitial = tokenInstance.balanceOf(address(timelockInstance));
+
+        // Emergency withdraw should still work when paused
+        vm.prank(address(timelockInstance));
+        ecoInstance.emergencyWithdrawToken(address(tokenInstance));
+
+        // Verify tokens were transferred
+        assertEq(tokenInstance.balanceOf(address(ecoInstance)), 0, "Ecosystem should have no tokens left");
+        assertEq(
+            tokenInstance.balanceOf(address(timelockInstance)),
+            timelockInitial + ecoBalance,
+            "Timelock should receive all tokens"
+        );
     }
 
     // ============ Full Upgrade Flow Test ============
