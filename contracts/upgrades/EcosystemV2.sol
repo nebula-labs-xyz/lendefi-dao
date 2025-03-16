@@ -11,7 +11,6 @@ pragma solidity 0.8.23;
 import {ILENDEFI} from "../interfaces/ILendefi.sol";
 import {IECOSYSTEM} from "../interfaces/IEcosystem.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {VestingWallet} from "@openzeppelin/contracts/finance/VestingWallet.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
@@ -32,6 +31,8 @@ contract EcosystemV2 is
 {
     using SafeERC20 for IERC20;
 
+    // ============ Constants ============
+
     /// @dev AccessControl Burner Role
     bytes32 internal constant BURNER_ROLE = keccak256("BURNER_ROLE");
     /// @dev AccessControl Pauser Role
@@ -43,6 +44,15 @@ contract EcosystemV2 is
     /// @dev AccessControl Manager Role
     bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
+    /// @dev Minimum required vesting duration (30 days)
+    uint256 internal constant MIN_VESTING_DURATION = 30 days;
+    /// @dev Maximum allowed vesting duration (10 years)
+    uint256 internal constant MAX_VESTING_DURATION = 3650 days; // 10 years
+    /// @dev Upgrade timelock duration (3 days)
+    uint256 private constant UPGRADE_TIMELOCK_DURATION = 3 days;
+
+    // ============ Storage Variables ============
+
     /// @dev governance token instance
     ILENDEFI internal tokenInstance;
     /// @dev starting reward supply
@@ -51,7 +61,7 @@ contract EcosystemV2 is
     uint256 public maxReward;
     /// @dev issued reward
     uint256 public issuedReward;
-    /// @dev burned reward amount
+    /// @dev burned reward amount (tracked separately for transparency)
     uint256 public burnedAmount;
     /// @dev maximum one time burn amount
     uint256 public maxBurn;
@@ -63,43 +73,40 @@ contract EcosystemV2 is
     uint256 public partnershipSupply;
     /// @dev partnership tokens issued so far
     uint256 public issuedPartnership;
-    /// @dev number of UUPS upgrades
+    /// @dev number of UUPS upgrades - packed with other variables to save gas
     uint32 public version;
     /// @dev timelock address for partner vesting cancellations
     address public timelock;
     /// @dev Addresses of vesting contracts issued to partners
     mapping(address partner => address vesting) public vestingContracts;
-    uint256[49] private __gap;
+
+    /// @dev Pending upgrade information
+    UpgradeRequest public pendingUpgrade;
+
+    // Storage gap reduced to account for new pendingUpgrade variable
+    uint256[16] private __gap;
+
+    // ============ Modifiers ============
 
     /**
-     * @dev Custom error types
+     * @dev Modifier to check for non-zero amounts
+     * @param amount The amount to validate
      */
-    // error ZeroAddressDetected();
-    // error InvalidAmount(uint256 amount);
-    // error AirdropSupplyLimit(uint256 requested, uint256 available);
-    // error GasLimit(uint256 recipients);
-    // error RewardLimit(uint256 amount, uint256 maxAllowed);
-    // error RewardSupplyLimit(uint256 requested, uint256 available);
-    // error BurnSupplyLimit(uint256 requested, uint256 available);
-    // error MaxBurnLimit(uint256 amount, uint256 maxAllowed);
-    // error InvalidAddress();
-    // error PartnerExists(address partner);
-    // error AmountExceedsSupply(uint256 requested, uint256 available);
-    // error ExcessiveMaxValue(uint256 amount, uint256 maxAllowed);
-    // error CallerNotAllowed();
+    modifier nonZeroAmount(uint256 amount) {
+        if (amount == 0) revert InvalidAmount(amount);
+        _;
+    }
 
     /**
-     * @dev Events
+     * @dev Modifier to check for non-zero addresses
+     * @param addr The address to validate
      */
-    // event Initialized(address indexed initializer);
-    // event AirDrop(address[] indexed winners, uint256 amount);
-    // event Reward(address indexed sender, address indexed recipient, uint256 amount);
-    // event Burn(address indexed burner, uint256 amount);
-    // event AddPartner(address indexed partner, address indexed vestingContract, uint256 amount);
-    // event CancelPartnership(address indexed partner, uint256 remainingAmount);
-    // event MaxRewardUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
-    // event MaxBurnUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
-    // event Upgrade(address indexed upgrader, address indexed newImplementation, uint32 version);
+    modifier nonZeroAddress(address addr) {
+        if (addr == address(0)) revert InvalidAddress();
+        _;
+    }
+
+    // ============ Constructor & Initializer ============
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -110,7 +117,7 @@ contract EcosystemV2 is
      * @dev Prevents receiving Ether. This contract doesn't handle ETH.
      */
     receive() external payable {
-        revert("NO_ETHER_ACCEPTED");
+        revert ValidationFailed("NO_ETHER_ACCEPTED");
     }
 
     /**
@@ -119,27 +126,28 @@ contract EcosystemV2 is
      * @param token The address of the governance token.
      * @param timelockAddr The address of the timelock controller for partner vesting cancellation.
      * @param guardian The address of the guardian (admin).
-     * @param pauser The address of the pauser.
+     * @param multisig The address of the pauser.
      * @custom:requires All input addresses must not be zero.
      * @custom:requires-role DEFAULT_ADMIN_ROLE for the guardian.
      * @custom:requires-role PAUSER_ROLE for the pauser.
      * @custom:events-emits {Initialized} event.
      * @custom:throws ZeroAddressDetected if any of the input addresses are zero.
      */
-    function initialize(address token, address timelockAddr, address guardian, address pauser) external initializer {
+    function initialize(address token, address timelockAddr, address guardian, address multisig) external initializer {
         __Pausable_init();
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
 
-        if (token == address(0) || timelockAddr == address(0) || guardian == address(0) || pauser == address(0)) {
+        if (token == address(0) || timelockAddr == address(0) || guardian == address(0) || multisig == address(0)) {
             revert ZeroAddressDetected();
         }
 
         // Set up roles
-        _grantRole(DEFAULT_ADMIN_ROLE, guardian);
-        _grantRole(PAUSER_ROLE, pauser);
+        _grantRole(DEFAULT_ADMIN_ROLE, timelockAddr);
         _grantRole(MANAGER_ROLE, timelockAddr);
+        _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(UPGRADER_ROLE, multisig); // Grant upgrade role to multisig
 
         // Set up token and timelock
         tokenInstance = ILENDEFI(payable(token));
@@ -162,9 +170,11 @@ contract EcosystemV2 is
         burnedAmount = 0;
 
         // Set version
-        ++version;
+        version = 1;
         emit Initialized(msg.sender);
     }
+
+    // ============ Contract State Management ============
 
     /**
      * @dev Pause contract.
@@ -185,6 +195,57 @@ contract EcosystemV2 is
     function unpause() external onlyRole(PAUSER_ROLE) {
         _unpause();
     }
+
+    /**
+     * @dev Schedules an upgrade to a new implementation
+     * @param newImplementation Address of the new implementation
+     * @notice Only callable by an address with UPGRADER_ROLE
+     */
+    function scheduleUpgrade(address newImplementation)
+        external
+        onlyRole(UPGRADER_ROLE)
+        nonZeroAddress(newImplementation)
+    {
+        uint64 currentTime = uint64(block.timestamp);
+        uint64 effectiveTime = currentTime + uint64(UPGRADE_TIMELOCK_DURATION);
+
+        pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
+
+        emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @dev Returns the remaining time before a scheduled upgrade can be executed
+     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     */
+    function upgradeTimelockRemaining() external view returns (uint256) {
+        if (!pendingUpgrade.exists) return 0;
+
+        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
+        if (block.timestamp >= deadline) return 0;
+
+        return deadline - block.timestamp;
+    }
+
+    /**
+     * @dev Emergency function to withdraw tokens to the timelock
+     * @param token The token to withdraw (use tokenInstance address for LENDEFI tokens)
+     * @param amount The amount to withdraw
+     * @notice Only callable by addresses with MANAGER_ROLE
+     * @notice Always sends tokens to the timelock controller
+     */
+    function emergencyWithdraw(address token, uint256 amount)
+        external
+        nonReentrant
+        onlyRole(MANAGER_ROLE)
+        nonZeroAddress(token)
+        nonZeroAmount(amount)
+    {
+        IERC20(token).safeTransfer(timelock, amount);
+        emit EmergencyWithdrawal(token, amount);
+    }
+
+    // ============ Token Distribution Functions ============
 
     /**
      * @dev Performs an airdrop to a list of recipients.
@@ -216,7 +277,18 @@ contract EcosystemV2 is
             revert GasLimit(len);
         }
 
-        uint256 totalAmount = len * amount;
+        // Count valid (non-zero) addresses to properly calculate total amount
+        uint256 validRecipientCount = 0;
+        for (uint256 i = 0; i < len;) {
+            if (recipients[i] != address(0)) {
+                validRecipientCount++;
+            }
+            unchecked {
+                ++i;
+            } // Gas optimization
+        }
+
+        uint256 totalAmount = validRecipientCount * amount;
         if (issuedAirDrop + totalAmount > airdropSupply) {
             revert AirdropSupplyLimit(totalAmount, airdropSupply - issuedAirDrop);
         }
@@ -224,10 +296,14 @@ contract EcosystemV2 is
         issuedAirDrop += totalAmount;
         emit AirDrop(recipients, amount);
 
-        for (uint256 i; i < len; ++i) {
+        // Distribute tokens to valid recipients
+        for (uint256 i = 0; i < len;) {
             if (recipients[i] != address(0)) {
                 IERC20(address(tokenInstance)).safeTransfer(recipients[i], amount);
             }
+            unchecked {
+                ++i;
+            } // Gas optimization
         }
     }
 
@@ -243,14 +319,18 @@ contract EcosystemV2 is
      * @custom:requires Total rewarded amount must not exceed the reward supply
      * @custom:events-emits {Reward} event
      * @custom:throws InvalidAmount if the amount is 0
+     * @custom:throws InvalidAddress if the recipient address is 0
      * @custom:throws RewardLimit if the amount exceeds the maximum reward limit
      * @custom:throws RewardSupplyLimit if the total rewarded amount exceeds the reward supply
      */
-    function reward(address to, uint256 amount) external nonReentrant whenNotPaused onlyRole(REWARDER_ROLE) {
-        if (amount == 0) {
-            revert InvalidAmount(amount);
-        }
-
+    function reward(address to, uint256 amount)
+        external
+        nonReentrant
+        whenNotPaused
+        onlyRole(REWARDER_ROLE)
+        nonZeroAmount(amount)
+        nonZeroAddress(to)
+    {
         // Check if the amount exceeds the max reward first (cheaper check)
         if (amount > maxReward) {
             revert RewardLimit(amount, maxReward);
@@ -281,11 +361,7 @@ contract EcosystemV2 is
      * @custom:throws MaxBurnLimit if the amount exceeds the maximum burn limit
      * @custom:throws BurnSupplyLimit if the amount exceeds available supply
      */
-    function burn(uint256 amount) external nonReentrant whenNotPaused onlyRole(BURNER_ROLE) {
-        if (amount == 0) {
-            revert InvalidAmount(amount);
-        }
-
+    function burn(uint256 amount) external nonReentrant whenNotPaused onlyRole(BURNER_ROLE) nonZeroAmount(amount) {
         // Check if the amount exceeds the max burn first (cheaper check)
         if (amount > maxBurn) {
             revert MaxBurnLimit(amount, maxBurn);
@@ -298,12 +374,16 @@ contract EcosystemV2 is
         }
 
         // Update both rewardSupply and track burnedAmount for accounting purposes
+        // This dual accounting allows us to track both the remaining supply and
+        // the total amount that has been burned historically
         rewardSupply -= amount;
         burnedAmount += amount;
 
         emit Burn(msg.sender, amount);
         tokenInstance.burn(amount);
     }
+
+    // ============ Partnership Management Functions ============
 
     /**
      * @dev Creates and funds a new vesting contract for a new partner.
@@ -316,11 +396,13 @@ contract EcosystemV2 is
      * @custom:requires Contract must not be paused
      * @custom:requires Partner address must not be zero and must be a valid contract or EOA
      * @custom:requires Amount must be between 100 ether and half of the partnership supply
+     * @custom:requires Duration must be within reasonable bounds
      * @custom:requires Total issued partnership tokens must not exceed the partnership supply
      * @custom:events-emits {AddPartner} event
      * @custom:throws InvalidAddress if the partner address is zero
      * @custom:throws PartnerExists if the partner already has a vesting contract
      * @custom:throws InvalidAmount if the amount is not within the valid range
+     * @custom:throws InvalidVestingSchedule if duration is not within reasonable bounds
      * @custom:throws AmountExceedsSupply if the total issued partnership tokens exceed the partnership supply
      */
     function addPartner(address partner, uint256 amount, uint256 cliff, uint256 duration)
@@ -328,17 +410,19 @@ contract EcosystemV2 is
         nonReentrant
         whenNotPaused
         onlyRole(MANAGER_ROLE)
+        nonZeroAddress(partner)
     {
-        if (partner == address(0)) {
-            revert InvalidAddress();
-        }
-
         if (vestingContracts[partner] != address(0)) {
             revert PartnerExists(partner);
         }
 
         if (amount < 100 ether || amount > partnershipSupply / 2) {
             revert InvalidAmount(amount);
+        }
+
+        // Add validation for vesting parameters
+        if (duration < MIN_VESTING_DURATION || duration > MAX_VESTING_DURATION || cliff >= duration) {
+            revert InvalidVestingSchedule();
         }
 
         if (issuedPartnership + amount > partnershipSupply) {
@@ -349,11 +433,7 @@ contract EcosystemV2 is
 
         // Use PartnerVesting which is cancellable by the timelock
         PartnerVesting vestingContract = new PartnerVesting(
-            address(tokenInstance),
-            timelock,
-            partner,
-            SafeCast.toUint64(block.timestamp + cliff),
-            SafeCast.toUint64(duration)
+            address(tokenInstance), timelock, partner, uint64(block.timestamp + cliff), uint64(duration)
         );
 
         vestingContracts[partner] = address(vestingContract);
@@ -367,18 +447,12 @@ contract EcosystemV2 is
      * @notice This can only be called by the timelock (governance)
      * @param partner The address of the partner whose vesting should be cancelled
      * @custom:requires The caller must be the timelock
+     * @custom:requires The partner must have a valid vesting contract
      * @custom:emits CancelPartnership event on successful cancellation
+     * @custom:throws CallerNotAllowed if the caller is not the timelock
+     * @custom:throws InvalidAddress if the partner has no vesting contract
      */
-    /**
-     * @dev Cancels a partner vesting contract
-     * @notice This can only be called by the timelock (governance)
-     * @param partner The address of the partner whose vesting should be cancelled
-     */
-    function cancelPartnership(address partner) external {
-        if (msg.sender != timelock) {
-            revert CallerNotAllowed();
-        }
-
+    function cancelPartnership(address partner) external nonZeroAddress(partner) onlyRole(MANAGER_ROLE) {
         address vestingContract = vestingContracts[partner];
         if (vestingContract == address(0)) {
             revert InvalidAddress();
@@ -397,9 +471,14 @@ contract EcosystemV2 is
             SafeERC20.safeTransfer(IERC20(address(tokenInstance)), timelock, returnedAmount);
         }
 
+        // Remove the partner's vesting contract from the mapping
+        delete vestingContracts[partner];
+
         // Emit event with the partner address and returned amount
         emit CancelPartnership(partner, returnedAmount);
     }
+
+    // ============ Limit Management Functions ============
 
     /**
      * @dev Updates the maximum one-time reward amount.
@@ -413,11 +492,12 @@ contract EcosystemV2 is
      * @custom:throws InvalidAmount if the amount is 0
      * @custom:throws ExcessiveMaxValue if the amount exceeds 5% of remaining reward supply
      */
-    function updateMaxReward(uint256 newMaxReward) external whenNotPaused onlyRole(MANAGER_ROLE) {
-        if (newMaxReward == 0) {
-            revert InvalidAmount(newMaxReward);
-        }
-
+    function updateMaxReward(uint256 newMaxReward)
+        external
+        whenNotPaused
+        onlyRole(MANAGER_ROLE)
+        nonZeroAmount(newMaxReward)
+    {
         // Ensure the maximum reward isn't excessive (no more than 5% of remaining reward supply)
         uint256 remainingRewards = rewardSupply - issuedReward;
         if (newMaxReward > remainingRewards / 20) {
@@ -443,11 +523,12 @@ contract EcosystemV2 is
      * @custom:throws InvalidAmount if the amount is 0
      * @custom:throws ExcessiveMaxValue if the amount exceeds 10% of remaining reward supply
      */
-    function updateMaxBurn(uint256 newMaxBurn) external whenNotPaused onlyRole(MANAGER_ROLE) {
-        if (newMaxBurn == 0) {
-            revert InvalidAmount(newMaxBurn);
-        }
-
+    function updateMaxBurn(uint256 newMaxBurn)
+        external
+        whenNotPaused
+        onlyRole(MANAGER_ROLE)
+        nonZeroAmount(newMaxBurn)
+    {
         // Ensure the maximum burn isn't excessive (no more than 10% of remaining reward supply)
         uint256 remainingRewards = rewardSupply - issuedReward;
         if (newMaxBurn > remainingRewards / 10) {
@@ -460,6 +541,8 @@ contract EcosystemV2 is
 
         emit MaxBurnUpdated(msg.sender, oldMaxBurn, newMaxBurn);
     }
+
+    // ============ View Functions ============
 
     /**
      * @dev Returns the effective available reward supply considering burns.
@@ -485,15 +568,32 @@ contract EcosystemV2 is
         return partnershipSupply - issuedPartnership;
     }
 
+    // ============ Internal Functions ============
+
     /**
-     * @dev Authorizes an upgrade to a new implementation.
-     * @notice This function is called during the upgrade process to authorize the new implementation.
-     * @param newImplementation The address of the new implementation contract.
-     * @custom:requires-role UPGRADER_ROLE
-     * @custom:events-emits {Upgrade} event with upgrader, implementation and version
+     * @dev Authorizes an upgrade to a new implementation with timelock enforcement
+     * @param newImplementation The address of the new implementation contract
      */
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+
+        if (pendingUpgrade.implementation != newImplementation) {
+            revert ImplementationMismatch(pendingUpgrade.implementation, newImplementation);
+        }
+
+        uint256 timeElapsed = block.timestamp - pendingUpgrade.scheduledTime;
+        if (timeElapsed < UPGRADE_TIMELOCK_DURATION) {
+            revert UpgradeTimelockActive(UPGRADE_TIMELOCK_DURATION - timeElapsed);
+        }
+
+        // Clear the scheduled upgrade
+        delete pendingUpgrade;
+
+        // Increment version
         ++version;
+
         emit Upgrade(msg.sender, newImplementation, version);
     }
 }
