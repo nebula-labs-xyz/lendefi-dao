@@ -15,8 +15,9 @@ import {Context} from "@openzeppelin/contracts/utils/Context.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {SafeCast} from "@openzeppelin/contracts/utils/math/SafeCast.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
-contract InvestorVesting is IVESTING, Context, Ownable2Step {
+contract InvestorVesting is IVESTING, Context, Ownable2Step, ReentrancyGuard {
     /// @dev start timestamp
     uint64 private immutable _start;
     /// @dev duration seconds
@@ -33,7 +34,9 @@ contract InvestorVesting is IVESTING, Context, Ownable2Step {
     constructor(address token, address beneficiary, uint64 startTimestamp, uint64 durationSeconds)
         Ownable(beneficiary)
     {
-        require(token != address(0x0) && beneficiary != address(0x0), "ZERO_ADDRESS");
+        if (token == address(0) || beneficiary == address(0)) {
+            revert ZeroAddress();
+        }
         _token = token;
         _start = startTimestamp;
         _duration = durationSeconds;
@@ -44,7 +47,7 @@ contract InvestorVesting is IVESTING, Context, Ownable2Step {
      *
      * Emits a {ERC20Released} event.
      */
-    function release() public virtual {
+    function release() public virtual nonReentrant {
         uint256 amount = releasable();
         _erc20Released[_token] += amount;
         emit ERC20Released(_token, amount);
