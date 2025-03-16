@@ -11,17 +11,19 @@ contract TreasuryTest is BasicDeploy {
 
     uint256 public vestingAmount = 1000 ether;
     uint256 public startTime;
-    uint256 public totalDuration;
+    uint256 public vestingDuration;
 
-    event EtherReleased(address indexed to, uint256 amount);
-    event ERC20Released(address indexed token, address indexed to, uint256 amount);
-    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);
-    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);
+    event EthReleased(address indexed to, uint256 amount, uint256 remainingReleasable); // Added remainingReleasable parameter
+    event TokenReleased(address indexed token, address indexed to, uint256 amount);
+    event VestingScheduleUpdated(address indexed updater, uint256 newStart, uint256 newDuration);
+    event Initialized(address indexed initializer, uint256 startTime, uint256 duration);
+    event EmergencyWithdrawal(address indexed token, address indexed to, uint256 amount);
+    event Upgraded(address indexed upgrader, address indexed implementation, uint32 version);
     event Received(address indexed src, uint256 amount);
 
     receive() external payable {
         if (msg.sender == address(treasuryInstance)) {
-            // extends test_Revert_ReleaseEther_Branch4()
+            // extends testRevert_ReleaseEther_Branch4
             bytes memory expError = abi.encodeWithSignature("ReentrancyGuardReentrantCall()");
             vm.prank(address(timelockInstance));
             vm.expectRevert(expError); // reentrancy
@@ -32,39 +34,32 @@ contract TreasuryTest is BasicDeploy {
     function setUp() public {
         vm.warp(block.timestamp + 365 days);
         startTime = uint64(block.timestamp - 180 days);
-        totalDuration = uint64(1095 days);
+        vestingDuration = uint64(1095 days);
         deployComplete();
         _setupToken();
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         treasuryInstance.grantRole(PAUSER_ROLE, pauser);
         vm.deal(address(treasuryInstance), vestingAmount);
     }
 
     // ============ Initialization Tests ============
-
-    function testCannotInitializeTwice() public {
-        bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
-        vm.prank(guardian);
-        vm.expectRevert(expError); // contract already initialized
-        treasuryInstance.initialize(guardian, address(timelockInstance));
-    }
-
-    // ============ Initialization Tests ============
     // Test: InitializeSuccess
     function testInitializeSuccess() public {
-        assertEq(treasuryInstance.hasRole(DEFAULT_ADMIN_ROLE, guardian), true);
+        // Update these assertions to match the new role assignments
+        assertEq(treasuryInstance.hasRole(DEFAULT_ADMIN_ROLE, address(timelockInstance)), true); // Changed from guardian
         assertEq(treasuryInstance.hasRole(PAUSER_ROLE, pauser), true);
         assertEq(treasuryInstance.hasRole(MANAGER_ROLE, address(timelockInstance)), true);
+        assertEq(treasuryInstance.hasRole(UPGRADER_ROLE, gnosisSafe), true); // Check for multisig role
         assertEq(treasuryInstance.start(), block.timestamp - 180 days);
         assertEq(treasuryInstance.duration(), 1095 days);
         assertEq(treasuryInstance.version(), 1);
     }
 
     // Test: RevertInitializeTwice
-    function testRevertInitializeTwice() public {
+    function testRevert_CantInitializeTwice() public {
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
-        treasuryInstance.initialize(guardian, address(timelockInstance));
+        treasuryInstance.initialize(guardian, address(timelockInstance), gnosisSafe, startTime, vestingDuration);
     }
 
     // ============ Start Tests ============
@@ -143,7 +138,7 @@ contract TreasuryTest is BasicDeploy {
     }
     // Test: Only Pauser Can Pause
 
-    function testOnlyPauserCanPause() public {
+    function testRevert_OnlyPauserCanPause() public {
         assertEq(treasuryInstance.paused(), false);
         vm.startPrank(pauser);
         treasuryInstance.pause();
@@ -164,7 +159,7 @@ contract TreasuryTest is BasicDeploy {
     }
 
     // Test: Only Pauser Can Unpause
-    function testOnlyPauserCanUnpause() public {
+    function testRevert_OnlyPauserCanUnpause() public {
         assertEq(treasuryInstance.paused(), false);
         vm.prank(pauser);
         treasuryInstance.pause();
@@ -182,7 +177,7 @@ contract TreasuryTest is BasicDeploy {
     }
 
     // Test: Cannot Release Tokens When Paused
-    function testCannotReleaseWhenPaused() public {
+    function testRevert_CannotReleaseWhenPaused() public {
         vm.warp(startTime + 10 days);
         assertEq(treasuryInstance.paused(), false);
 
@@ -197,7 +192,7 @@ contract TreasuryTest is BasicDeploy {
     }
 
     // Test: Cannot Release ERC20 When Paused
-    function testCannotReleaseERC20WhenPaused() public {
+    function testRevert_CannotReleaseERC20WhenPaused() public {
         // Move to a time when tokens are vested
         _moveToVestingTime(50);
 
@@ -217,7 +212,7 @@ contract TreasuryTest is BasicDeploy {
     }
     // Test: Only Manager Can Release Tokens
 
-    function testOnlyManagerCanRelease() public {
+    function testRevert_OnlyManagerCanRelease() public {
         vm.warp(block.timestamp + 548 days); // half-vested
         uint256 vested = treasuryInstance.releasable(address(tokenInstance));
         // console.log(vested);
@@ -337,7 +332,7 @@ contract TreasuryTest is BasicDeploy {
         _moveToVestingTime(50);
 
         uint256 elapsed = block.timestamp - treasuryInstance.start();
-        uint256 expectedVested = (INIT_BALANCE_USDC * elapsed) / totalDuration;
+        uint256 expectedVested = (INIT_BALANCE_USDC * elapsed) / vestingDuration;
         uint256 releasable = treasuryInstance.releasable(address(newUsdc));
 
         assertEq(releasable, expectedVested, "Incorrect releasable amount");
@@ -349,7 +344,7 @@ contract TreasuryTest is BasicDeploy {
 
         uint256 vested = treasuryInstance.releasable();
         uint256 elapsed = block.timestamp - treasuryInstance.start();
-        uint256 expectedVested = (vestingAmount * elapsed) / totalDuration;
+        uint256 expectedVested = (vestingAmount * elapsed) / vestingDuration;
 
         assertEq(vested, expectedVested, "Incorrect releasable ETH amount");
     }
@@ -360,7 +355,7 @@ contract TreasuryTest is BasicDeploy {
 
         uint256 totalBalance = tokenInstance.balanceOf(address(treasuryInstance));
         uint256 elapsed = block.timestamp - treasuryInstance.start();
-        uint256 expectedVested = (totalBalance * elapsed) / totalDuration;
+        uint256 expectedVested = (totalBalance * elapsed) / vestingDuration;
         uint256 vested = treasuryInstance.releasable(address(tokenInstance));
 
         assertEq(vested, expectedVested, "Incorrect releasable token amount");
@@ -369,11 +364,11 @@ contract TreasuryTest is BasicDeploy {
     // Fuzz Test: Releasing Tokens with Randomized Timing
     function testFuzzRelease(uint256 warpTime) public {
         // Bound warpTime between start + cliff and end of vesting
-        warpTime = bound(warpTime, startTime, startTime + totalDuration);
+        warpTime = bound(warpTime, startTime, startTime + vestingDuration);
         vm.warp(warpTime);
 
         uint256 elapsed = warpTime - startTime;
-        uint256 expectedRelease = (elapsed * vestingAmount) / totalDuration;
+        uint256 expectedRelease = (elapsed * vestingAmount) / vestingDuration;
 
         // Ensure we're not trying to release more than what's vested
         uint256 alreadyReleased = treasuryInstance.released();
@@ -392,7 +387,8 @@ contract TreasuryTest is BasicDeploy {
     // Fuzz Test: Only Pauser Can Pause or Unpause
     function testFuzzOnlyPauserCanPauseUnpause(address caller) public {
         vm.startPrank(caller);
-        if (caller != pauser) {
+        if (caller != guardian) {
+            //guardian is pauser now
             bytes memory expError =
                 abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", caller, PAUSER_ROLE);
 
@@ -407,25 +403,19 @@ contract TreasuryTest is BasicDeploy {
         }
     }
 
-    // Test: RevertInitialize
-    function testRevertInitialize() public {
-        vm.warp(startTime + 219 days);
-        bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
-        vm.prank(guardian);
-        vm.expectRevert(expError); // contract already initialized
-        treasuryInstance.initialize(guardian, address(timelockInstance));
-    }
-
     // Test: ReleaseEther
     function testReleaseEther() public {
         vm.warp(startTime + 219 days);
         uint256 startBal = address(treasuryInstance).balance;
         uint256 vested = treasuryInstance.releasable();
+
+        // Update the event name and parameters to match the contract
         vm.startPrank(address(timelockInstance));
-        vm.expectEmit(address(treasuryInstance));
-        emit EtherReleased(managerAdmin, vested);
+        vm.expectEmit(true, true, true, true);
+        emit EthReleased(managerAdmin, vested, 0); // Use EthReleased to match contract
         treasuryInstance.release(managerAdmin, vested);
         vm.stopPrank();
+
         assertEq(managerAdmin.balance, vested);
         assertEq(address(treasuryInstance).balance, startBal - vested);
     }
@@ -444,7 +434,7 @@ contract TreasuryTest is BasicDeploy {
     function testRevertReleaseEtherBranch2() public {
         vm.warp(startTime + 219 days);
         assertEq(treasuryInstance.paused(), false);
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         treasuryInstance.grantRole(PAUSER_ROLE, pauser);
         vm.prank(pauser);
         treasuryInstance.pause();
@@ -456,17 +446,8 @@ contract TreasuryTest is BasicDeploy {
         treasuryInstance.release(assetRecipient, 100 ether);
     }
 
-    // Test: RevertReleaseEtherBranch3
-    function testRevertReleaseEtherBranch3() public {
-        vm.warp(startTime + 10 days);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "NOT_ENOUGH_VESTED");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        treasuryInstance.release(assetRecipient, 101 ether);
-    }
-
-    // Test: RevertReleaseEtherBranch4
-    function testRevertReleaseEtherBranch4() public {
+    // Test: testRevert_ReleaseEther_Branch4
+    function testRevert_ReleaseEther_Branch4() public {
         vm.warp(startTime + 1095 days);
         uint256 startingBal = address(this).balance;
 
@@ -503,7 +484,7 @@ contract TreasuryTest is BasicDeploy {
         uint256 vested = treasuryInstance.releasable(address(tokenInstance));
         assertTrue(vested > 0);
         assertEq(treasuryInstance.paused(), false);
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         treasuryInstance.grantRole(PAUSER_ROLE, pauser);
         vm.prank(pauser);
         treasuryInstance.pause();
@@ -513,28 +494,6 @@ contract TreasuryTest is BasicDeploy {
         vm.prank(address(timelockInstance));
         vm.expectRevert(expError); // contract paused
         treasuryInstance.release(address(tokenInstance), assetRecipient, vested);
-    }
-
-    // Test: RevertReleaseTokensBranch3
-    function testRevertReleaseTokensBranch3() public {
-        vm.warp(startTime + 219 days);
-        uint256 vested = treasuryInstance.releasable(address(tokenInstance));
-        assertTrue(vested > 0);
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "NOT_ENOUGH_VESTED");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError); // not enough vested violation
-        treasuryInstance.release(address(tokenInstance), assetRecipient, vested + 1 ether);
-    }
-
-    // Test: RevertReleaseTokensZeroToken
-    function testRevertReleaseTokensZeroToken() public {
-        _moveToVestingTime(50);
-        uint256 amount = 100 ether;
-
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS");
-        vm.prank(address(timelockInstance));
-        vm.expectRevert(expError);
-        treasuryInstance.release(address(tokenInstance), address(0), amount);
     }
 
     // Test: ERC20Released
@@ -561,19 +520,14 @@ contract TreasuryTest is BasicDeploy {
             "erc20Released should return correct amount"
         );
     }
-    // Additional test cases
 
     function testRoleManagement() public {
-        address newManager = address(0xABC);
-
-        vm.startPrank(guardian);
-        vm.expectEmit(true, true, true, true);
-        emit RoleGranted(MANAGER_ROLE, newManager, guardian);
-        treasuryInstance.grantRole(MANAGER_ROLE, newManager);
-
-        vm.expectEmit(true, true, true, true);
-        emit RoleRevoked(MANAGER_ROLE, newManager, guardian);
-        treasuryInstance.revokeRole(MANAGER_ROLE, newManager);
+        // Change the prank from guardian to timelock since timelock now has DEFAULT_ADMIN_ROLE
+        vm.startPrank(address(timelockInstance));
+        treasuryInstance.grantRole(MANAGER_ROLE, managerAdmin);
+        assertTrue(treasuryInstance.hasRole(MANAGER_ROLE, managerAdmin));
+        treasuryInstance.revokeRole(MANAGER_ROLE, managerAdmin);
+        assertFalse(treasuryInstance.hasRole(MANAGER_ROLE, managerAdmin));
         vm.stopPrank();
     }
 
@@ -612,15 +566,6 @@ contract TreasuryTest is BasicDeploy {
         uint256 actualVested = treasuryInstance.releasable();
 
         assertApproxEqRel(actualVested, expectedVested, 0.01e18);
-    }
-
-    function testReleaseToZeroAddress() public {
-        _moveToVestingTime(100);
-        vm.prank(address(timelockInstance));
-        bytes memory expError = abi.encodeWithSignature("CustomError(string)", "ZERO_ADDRESS");
-        vm.expectRevert(expError);
-        treasuryInstance.release(address(0), 100 ether);
-        assertEq(address(0).balance, 0);
     }
 
     function testReentrancyOnMultipleReleases() public {
@@ -667,21 +612,82 @@ contract TreasuryTest is BasicDeploy {
         treasuryInstance.release(beneficiary, 100 ether);
     }
 
-    // Additional helper functions
+    // Test: RevertReleaseEtherBranch3
+    function testRevertReleaseEtherBranch3() public {
+        vm.warp(startTime + 10 days);
+        uint256 vested = treasuryInstance.releasable();
+        uint256 requestedAmount = 101 ether;
 
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSelector(ITREASURY.InsufficientVestedAmount.selector, requestedAmount, vested));
+        treasuryInstance.release(assetRecipient, requestedAmount);
+    }
+
+    // Test: RevertReleaseTokensBranch3
+    function testRevertReleaseTokensBranch3() public {
+        vm.warp(startTime + 219 days);
+        uint256 vested = treasuryInstance.releasable(address(tokenInstance));
+        assertTrue(vested > 0);
+        uint256 requestedAmount = vested + 1 ether;
+
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSelector(ITREASURY.InsufficientVestedAmount.selector, requestedAmount, vested));
+        treasuryInstance.release(address(tokenInstance), assetRecipient, requestedAmount);
+    }
+
+    // Test: RevertReleaseTokensZeroToken
+    function testRevertReleaseTokensZeroToken() public {
+        _moveToVestingTime(50);
+        uint256 amount = 100 ether;
+
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        treasuryInstance.release(address(tokenInstance), address(0), amount);
+    }
+
+    // Test: ReleaseToZeroAddress
+    function testReleaseToZeroAddress() public {
+        _moveToVestingTime(100);
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        treasuryInstance.release(address(0), 100 ether);
+        assertEq(address(0).balance, 0);
+    }
+
+    // Add new tests for zero amount errors
+    function testRevert_ReleaseZeroAmount() public {
+        _moveToVestingTime(50);
+
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        treasuryInstance.release(beneficiary, 0);
+
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        treasuryInstance.release(address(tokenInstance), beneficiary, 0);
+    }
+
+    // Test for invalid duration
+    function testRevert_InvalidDuration() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSelector(ITREASURY.InvalidDuration.selector, 0));
+        treasuryInstance.updateVestingSchedule(uint64(block.timestamp), 0);
+    }
+
+    // Additional helper functions
     function _grantManagerRole(address account) internal {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         treasuryInstance.grantRole(MANAGER_ROLE, account);
     }
 
     function _revokeManagerRole(address account) internal {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         treasuryInstance.revokeRole(MANAGER_ROLE, account);
     }
 
     function _moveToVestingTime(uint256 percentage) internal {
         require(percentage <= 100, "Invalid percentage");
-        uint256 timeToMove = (totalDuration * percentage) / 100;
+        uint256 timeToMove = (vestingDuration * percentage) / 100;
         vm.warp(startTime + timeToMove);
     }
 
@@ -691,10 +697,126 @@ contract TreasuryTest is BasicDeploy {
         tokenInstance.initializeTGE(address(ecoInstance), address(treasuryInstance));
         uint256 ecoBal = tokenInstance.balanceOf(address(ecoInstance));
         uint256 treasuryBal = tokenInstance.balanceOf(address(treasuryInstance));
+        uint256 guardianBal = tokenInstance.balanceOf(guardian);
 
         assertEq(ecoBal, 22_000_000 ether);
-        assertEq(treasuryBal, 28_000_000 ether);
-        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal);
+        assertEq(treasuryBal, 27_400_000 ether);
+        assertEq(guardianBal, 600_000 ether);
+        assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal + guardianBal);
         vm.stopPrank();
+    }
+
+    // Test successful scheduling of an upgrade
+    function testScheduleUpgrade() public {
+        address mockImplementation = address(0xABCD);
+
+        vm.recordLogs();
+
+        vm.prank(gnosisSafe);
+        treasuryInstance.scheduleUpgrade(mockImplementation);
+
+        // Verify event emission
+        Vm.Log[] memory entries = vm.getRecordedLogs();
+        assertEq(entries.length, 1);
+
+        // Get pending upgrade info
+        (address implementation, uint64 scheduledTime, bool exists) = treasuryInstance.pendingUpgrade();
+        assertEq(implementation, mockImplementation);
+        assertEq(scheduledTime, uint64(block.timestamp));
+        assertTrue(exists);
+    }
+
+    // Test the remaining time calculation
+    function testUpgradeTimelockRemaining() public {
+        address mockImplementation = address(0xABCD);
+
+        // Schedule an upgrade
+        vm.prank(gnosisSafe);
+        treasuryInstance.scheduleUpgrade(mockImplementation);
+
+        // Check initial remaining time
+        uint256 remaining = treasuryInstance.upgradeTimelockRemaining();
+        assertEq(remaining, 3 days, "Remaining time should be 3 days initially");
+
+        // Forward time by 1 day
+        vm.warp(block.timestamp + 1 days);
+
+        // Check updated remaining time
+        remaining = treasuryInstance.upgradeTimelockRemaining();
+        assertEq(remaining, 2 days, "Remaining time should be 2 days after 1 day has passed");
+
+        // Forward time past timelock
+        vm.warp(block.timestamp + 3 days);
+
+        // Check that remaining time is now 0
+        remaining = treasuryInstance.upgradeTimelockRemaining();
+        assertEq(remaining, 0, "Remaining time should be 0 after timelock period has passed");
+    }
+
+    // Test that non-upgraders can't schedule upgrades
+    function testRevert_OnlyUpgraderCanSchedule() public {
+        address mockImplementation = address(0xABCD);
+
+        bytes memory expError = abi.encodeWithSignature(
+            "AccessControlUnauthorizedAccount(address,bytes32)", guardian, treasuryInstance.UPGRADER_ROLE()
+        );
+
+        vm.prank(guardian);
+        vm.expectRevert(expError);
+        treasuryInstance.scheduleUpgrade(mockImplementation);
+    }
+
+    // Test revert on zero address implementation
+    function testRevert_ScheduleUpgradeZeroAddress() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(ITREASURY.ZeroAddressError.selector);
+        treasuryInstance.scheduleUpgrade(address(0));
+    }
+
+    // Test full upgrade flow with timelock
+    function testTreasuryUpgradeWithTimelock() public {
+        deployTreasuryUpgrade();
+    }
+
+    // Test emergency withdrawal of ETH always goes to timelock
+    function testEmergencyWithdrawETHToTimelock() public {
+        uint256 amount = 0.5 ether;
+        uint256 initialBalance = address(timelockInstance).balance;
+
+        vm.prank(address(timelockInstance)); // Using timelock as it has MANAGER_ROLE
+        vm.expectEmit(true, true, true, true);
+        emit EmergencyWithdrawal(ethereum, address(timelockInstance), amount);
+        treasuryInstance.emergencyWithdraw(ethereum, amount);
+
+        assertEq(address(timelockInstance).balance, initialBalance + amount, "ETH should be sent to timelock");
+    }
+
+    // Test emergency withdrawal of tokens always goes to timelock
+    function testEmergencyWithdrawTokensToTimelock() public {
+        uint256 initialBalance = tokenInstance.balanceOf(address(timelockInstance));
+        uint256 amount = 1000 ether;
+
+        vm.prank(address(timelockInstance)); // Using timelock as it has MANAGER_ROLE
+        vm.expectEmit(true, true, true, true);
+        emit EmergencyWithdrawal(address(tokenInstance), address(timelockInstance), amount);
+        treasuryInstance.emergencyWithdraw(address(tokenInstance), amount);
+
+        assertEq(
+            tokenInstance.balanceOf(address(timelockInstance)),
+            initialBalance + amount,
+            "Tokens should be sent to timelock"
+        );
+    }
+
+    // Test emergency withdrawal with zero amount
+    function testRevert_EmergencyWithdrawZeroAmount() public {
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(ITREASURY.ZeroAmountError.selector);
+        treasuryInstance.emergencyWithdraw(address(tokenInstance), 0);
+    }
+
+    // Test timelock address getter
+    function testTimelockAddress() public {
+        assertEq(treasuryInstance.timelockAddress(), address(timelockInstance), "Timelock address should match");
     }
 }
