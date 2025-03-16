@@ -158,7 +158,25 @@ contract GovernanceToken is
     /// @dev Error thrown for general validation failures
     error ValidationFailed(string reason);
 
+    /**
+     * @dev Modifier to check for non-zero amounts
+     * @param amount The amount to validate
+     */
+    modifier nonZeroAmount(uint256 amount) {
+        if (amount == 0) revert ZeroAmount();
+        _;
+    }
+
+    /**
+     * @dev Modifier to check for non-zero addresses
+     * @param addr The address to validate
+     */
+    modifier nonZeroAddress(address addr) {
+        if (addr == address(0)) revert ZeroAddress();
+        _;
+    }
     /// @custom:oz-upgrades-unsafe-allow constructor
+
     constructor() {
         _disableInitializers();
     }
@@ -178,6 +196,10 @@ contract GovernanceToken is
      * @custom:throws ZeroAddress if any address is zero.
      */
     function initializeUUPS(address guardian, address timelock, address multisig) external initializer {
+        if (guardian == address(0)) revert ZeroAddress();
+        if (timelock == address(0)) revert ZeroAddress();
+        if (multisig == address(0)) revert ZeroAddress();
+
         __ERC20_init("Lendefi DAO", "LEND");
         __ERC20Burnable_init();
         __ERC20Pausable_init();
@@ -185,10 +207,6 @@ contract GovernanceToken is
         __ERC20Permit_init("Lendefi DAO");
         __ERC20Votes_init();
         __UUPSUpgradeable_init();
-
-        if (guardian == address(0)) revert ZeroAddress();
-        if (timelock == address(0)) revert ZeroAddress();
-        if (multisig == address(0)) revert ZeroAddress();
 
         _grantRole(DEFAULT_ADMIN_ROLE, timelock);
         _grantRole(TGE_ROLE, guardian);
@@ -278,10 +296,13 @@ contract GovernanceToken is
      * @custom:throws BridgeAmountExceeded if amount exceeds maxBridge
      * @custom:throws MaxSupplyExceeded if the mint would exceed initialSupply
      */
-    function bridgeMint(address to, uint256 amount) external whenNotPaused onlyRole(BRIDGE_ROLE) {
-        // Input validation
-        if (to == address(0)) revert ZeroAddress();
-        if (amount == 0) revert ZeroAmount();
+    function bridgeMint(address to, uint256 amount)
+        external
+        nonZeroAddress(to)
+        nonZeroAmount(amount)
+        whenNotPaused
+        onlyRole(BRIDGE_ROLE)
+    {
         if (amount > maxBridge) revert BridgeAmountExceeded(amount, maxBridge);
 
         // Supply constraint validation
@@ -307,8 +328,7 @@ contract GovernanceToken is
      * @custom:throws ZeroAmount if newMaxBridge is zero
      * @custom:throws ValidationFailed if bridge amount is too high
      */
-    function updateMaxBridgeAmount(uint256 newMaxBridge) external onlyRole(MANAGER_ROLE) {
-        if (newMaxBridge == 0) revert ZeroAmount();
+    function updateMaxBridgeAmount(uint256 newMaxBridge) external nonZeroAmount(newMaxBridge) onlyRole(MANAGER_ROLE) {
         // Add a reasonable cap, e.g., 1% of initial supply
         if (newMaxBridge > initialSupply / 100) revert ValidationFailed("Bridge amount too high");
 
@@ -326,9 +346,11 @@ contract GovernanceToken is
      * @custom:events-emits {UpgradeScheduled} event
      * @custom:throws ZeroAddress if newImplementation is zero
      */
-    function scheduleUpgrade(address newImplementation) external onlyRole(UPGRADER_ROLE) {
-        if (newImplementation == address(0)) revert ZeroAddress();
-
+    function scheduleUpgrade(address newImplementation)
+        external
+        nonZeroAddress(newImplementation)
+        onlyRole(UPGRADER_ROLE)
+    {
         uint64 currentTime = uint64(block.timestamp);
         uint64 effectiveTime = currentTime + uint64(UPGRADE_TIMELOCK_DURATION);
 
@@ -342,12 +364,9 @@ contract GovernanceToken is
      * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
      */
     function upgradeTimelockRemaining() external view returns (uint256) {
-        if (!pendingUpgrade.exists) return 0;
-
-        uint256 deadline = pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION;
-        if (block.timestamp >= deadline) return 0;
-
-        return deadline - block.timestamp;
+        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
+            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
+            : 0;
     }
 
     // The following functions are overrides required by Solidity.
