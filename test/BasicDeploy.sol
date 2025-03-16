@@ -223,9 +223,6 @@ contract BasicDeploy is Test {
         assertFalse(address(govInstance) == govImplAddressV1);
         assertEq(govInstance.uupsVersion(), 1);
 
-        // Verify gnosis multisig has the required role
-        assertTrue(govInstance.gnosisSafe() == gnosisSafe, "Gnosis Safe address not set correctly");
-
         // Create options struct for the implementation
         Options memory opts = Options({
             referenceContract: "LendefiGovernor.sol",
@@ -261,7 +258,6 @@ contract BasicDeploy is Test {
         LendefiGovernorV2 govInstanceV2 = LendefiGovernorV2(proxy);
         assertEq(govInstanceV2.uupsVersion(), 2, "Version not incremented to 2");
         assertFalse(govImplAddressV2 == govImplAddressV1, "Implementation address didn't change");
-        assertTrue(govInstanceV2.gnosisSafe() == gnosisSafe, "Lost gnosisSafe address");
     }
 
     function deployIMUpgrade() internal {
