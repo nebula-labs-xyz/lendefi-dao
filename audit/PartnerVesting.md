@@ -8,7 +8,7 @@ The PartnerVesting contract has been audited for security vulnerabilities and co
 
 - Contract: PartnerVesting.sol
 - Version: v1
-- Framework: OpenZeppelin Contracts v4
+- Framework: OpenZeppelin Contracts v5
 
 ## Key Findings
 
