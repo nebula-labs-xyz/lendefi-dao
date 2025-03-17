@@ -11,7 +11,7 @@ import {TimelockControllerUpgradeable} from
 
 contract LendefiGovernorTest is BasicDeploy {
     event Initialized(address indexed src);
-
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
     event GovernanceSettingsUpdated(
         address indexed caller, uint256 votingDelay, uint256 votingPeriod, uint256 proposalThreshold
     );
@@ -42,12 +42,12 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: RightOwner
-    function test_RightOwner() public {
+    function test__RightOwner() public {
         assertTrue(govInstance.hasRole(DEFAULT_ADMIN_ROLE, address(timelockInstance)) == true);
     }
 
     // Test: CreateProposal
-    function testCreateProposal() public {
+    function test_CreateProposal() public {
         // get enough gov tokens to make proposal (20K)
         vm.deal(alice, 1 ether);
         address[] memory winners = new address[](1);
@@ -81,7 +81,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: CastVote
-    function testCastVote() public {
+    function test_CastVote() public {
         // get enough gov tokens to make proposal (20K)
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -135,7 +135,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: QueProposal
-    function testQueProposal() public {
+    function test_QueProposal() public {
         // get enough gov tokens to make proposal (20K)
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -195,7 +195,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: ExecuteProposal
-    function testExecuteProposal() public {
+    function test_ExecuteProposal() public {
         // get enough gov tokens to meet the quorum requirement (500K)
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -267,7 +267,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: ProposeQuorumDefeat
-    function testProposeQuorumDefeat() public {
+    function test_ProposeQuorumDefeat() public {
         // quorum at 1% is 500_000
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -336,7 +336,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: State_NonexistentProposal
-    function testState_NonexistentProposal() public {
+    function test_State_NonexistentProposal() public {
         bytes memory expError = abi.encodeWithSignature("GovernorNonexistentProposal(uint256)", 1);
 
         vm.expectRevert(expError);
@@ -344,12 +344,12 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: Executor
-    function testExecutor() public {
+    function test_Executor() public {
         assertEq(govInstance.timelock(), address(timelockInstance));
     }
 
     // Test: UpdateVotingDelay
-    function testUpdateVotingDelay() public {
+    function test_UpdateVotingDelay() public {
         // Get enough gov tokens to meet the proposal threshold
         address[] memory winners = new address[](3);
         winners[0] = alice;
@@ -434,21 +434,21 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     //Test: VotingDelay
-    function testVotingDelay() public {
+    function test_VotingDelay() public {
         // Retrieve voting delay
         uint256 delay = govInstance.votingDelay();
         assertEq(delay, 7200);
     }
 
     //Test: VotingPeriod
-    function testVotingPeriod() public {
+    function test_VotingPeriod() public {
         // Retrieve voting period
         uint256 period = govInstance.votingPeriod();
         assertEq(period, 50400);
     }
 
     //Test: Quorum
-    function testQuorum() public {
+    function test_Quorum() public {
         // Ensure the block number is valid and not in the future
         vm.roll(block.number + 1);
         // Retrieve quorum
@@ -457,7 +457,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     //Test: ProposalThreshold
-    function testProposalThreshold() public {
+    function test_ProposalThreshold() public {
         // Retrieve proposal threshold
         uint256 threshold = govInstance.proposalThreshold();
         assertEq(threshold, 20000e18);
@@ -482,7 +482,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: _authorizeUpgrade with gnosisSafe permission
-    function test_AuthorizeUpgrade() public {
+    function test__AuthorizeUpgrade() public {
         // upgrade Governor
         address proxy = address(govInstance);
 
@@ -542,7 +542,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: Default constants match expected values
-    function testDefaultConstants() public {
+    function test_DefaultConstants() public {
         assertEq(govInstance.DEFAULT_VOTING_DELAY(), 7200);
         assertEq(govInstance.DEFAULT_VOTING_PERIOD(), 50400);
         assertEq(govInstance.DEFAULT_PROPOSAL_THRESHOLD(), 20_000 ether);
@@ -565,12 +565,12 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: Upgrade timelock remaining with no upgrade scheduled
-    function testUpgradeTimelockRemainingNoUpgrade() public {
+    function test_UpgradeTimelockRemainingNoUpgrade() public {
         assertEq(govInstance.upgradeTimelockRemaining(), 0, "Should be 0 with no scheduled upgrade");
     }
 
     // Test: Upgrade timelock remaining after scheduling
-    function testUpgradeTimelockRemaining() public {
+    function test_UpgradeTimelockRemaining() public {
         address newImplementation = address(0x1234);
 
         // Schedule upgrade
@@ -590,67 +590,7 @@ contract LendefiGovernorTest is BasicDeploy {
         assertEq(govInstance.upgradeTimelockRemaining(), 0, "Should be 0 after timelock expires");
     }
 
-    // Test: Attempt upgrade when timelock is active
-    function testRevert_UpgradeTimelockActive() public {
-        address newImplementation = address(0x1234);
-
-        // Schedule upgrade
-        vm.prank(gnosisSafe);
-        govInstance.scheduleUpgrade(newImplementation);
-
-        // Try to upgrade immediately
-        vm.prank(gnosisSafe);
-        uint256 remaining = govInstance.upgradeTimelockRemaining();
-        vm.expectRevert(abi.encodeWithSelector(LendefiGovernor.UpgradeTimelockActive.selector, remaining));
-
-        // Use low-level call to attempt upgrade
-        (bool success,) = address(govInstance).call(
-            abi.encodeWithSelector(0x3659cfe6, newImplementation) // upgradeTo(address)
-        );
-        assertFalse(success);
-    }
-
-    // Test: Attempt upgrade without scheduling
-    function testRevert_UpgradeNotScheduled() public {
-        address newImplementation = address(0x1234);
-
-        // Try to upgrade without scheduling
-        vm.prank(gnosisSafe);
-        vm.expectRevert(abi.encodeWithSelector(LendefiGovernor.UpgradeNotScheduled.selector));
-
-        // Use low-level call to attempt upgrade
-        (bool success,) = address(govInstance).call(
-            abi.encodeWithSelector(0x3659cfe6, newImplementation) // upgradeTo(address)
-        );
-        assertFalse(success);
-    }
-
-    // Test: Attempt upgrade with implementation mismatch
-    function testRevert_ImplementationMismatch() public {
-        address scheduledImpl = address(0x1234);
-        address wrongImpl = address(0x5678);
-
-        // Schedule upgrade
-        vm.prank(gnosisSafe);
-        govInstance.scheduleUpgrade(scheduledImpl);
-
-        // Wait for timelock to expire
-        vm.warp(block.timestamp + govInstance.UPGRADE_TIMELOCK_DURATION() + 1);
-
-        // Try to upgrade with different implementation
-        vm.prank(gnosisSafe);
-        vm.expectRevert(
-            abi.encodeWithSelector(LendefiGovernor.ImplementationMismatch.selector, scheduledImpl, wrongImpl)
-        );
-
-        // Use low-level call to attempt upgrade
-        (bool success,) = address(govInstance).call(
-            abi.encodeWithSelector(0x3659cfe6, wrongImpl) // upgradeTo(address)
-        );
-        assertFalse(success);
-    }
-
-    function test_UpgradeTimelockPeriod() public {
+    function test__UpgradeTimelockPeriod() public {
         address newImplementation = address(0x1234);
 
         vm.prank(gnosisSafe);
@@ -668,12 +608,12 @@ contract LendefiGovernorTest is BasicDeploy {
     }
     // Test: Complete successful timelock upgrade process
 
-    function testSuccessfulTimelockUpgrade() public {
+    function test_SuccessfulTimelockUpgrade() public {
         deployGovernorUpgrade();
     }
 
     // Test: Reschedule an upgrade
-    function testRescheduleUpgrade() public {
+    function test_RescheduleUpgrade() public {
         address firstImpl = address(0x1234);
         address secondImpl = address(0x5678);
 
@@ -697,7 +637,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     // Test: Schedule upgrade with proper permissions
-    function test_ScheduleUpgrade() public {
+    function test__ScheduleUpgrade() public {
         address newImplementation = address(0x1234);
 
         vm.expectEmit(true, true, true, true);
@@ -715,6 +655,167 @@ contract LendefiGovernorTest is BasicDeploy {
         assertTrue(exists, "Upgrade should be scheduled");
         assertEq(impl, newImplementation, "Implementation address should match");
         assertEq(scheduledTime, block.timestamp, "Scheduled time should match current time");
+    }
+
+    // Test for _authorizeUpgrade when upgrade not scheduled
+    function testRevert_UpgradeNotScheduled() public {
+        LendefiGovernorV2 implementation = new LendefiGovernorV2();
+
+        // Don't schedule an upgrade first
+
+        // Try upgrading directly - this should hit the internal _authorizeUpgrade function
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSelector(LendefiGovernor.UpgradeNotScheduled.selector));
+        govInstance.upgradeToAndCall(address(implementation), "");
+    }
+
+    // Test for implementation mismatch in _authorizeUpgrade
+    function testRevert_ImplementationMismatch() public {
+        address scheduledImpl = address(0x1234);
+
+        // Deploy a different implementation than what we'll schedule
+        LendefiGovernorV2 wrongImplementation = new LendefiGovernorV2();
+
+        // Schedule specific implementation
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(scheduledImpl);
+
+        // But try to upgrade with a different one
+        vm.warp(block.timestamp + govInstance.UPGRADE_TIMELOCK_DURATION() + 1);
+        vm.prank(gnosisSafe);
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LendefiGovernor.ImplementationMismatch.selector, scheduledImpl, address(wrongImplementation)
+            )
+        );
+        govInstance.upgradeToAndCall(address(wrongImplementation), "");
+    }
+
+    // Test for timelock active in _authorizeUpgrade
+    function testRevert_UpgradeTimelockActive() public {
+        address newImpl = address(0x1234);
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        govInstance.scheduleUpgrade(newImpl);
+
+        // Try upgrading immediately without waiting for timelock
+
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                LendefiGovernor.UpgradeTimelockActive.selector, govInstance.UPGRADE_TIMELOCK_DURATION()
+            )
+        );
+        vm.prank(gnosisSafe);
+        govInstance.upgradeToAndCall(newImpl, "");
+    }
+
+    // Test cancelling an upgrade
+    function test_CancelUpgrade() public {
+        address mockImplementation = address(0xABCD);
+
+        // Schedule an upgrade first
+        vm.prank(gnosisSafe); // Has UPGRADER_ROLE
+        govInstance.scheduleUpgrade(mockImplementation);
+
+        // Verify upgrade is scheduled
+        (address impl,, bool exists) = govInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(impl, mockImplementation);
+
+        // Now cancel it
+        vm.expectEmit(true, true, false, false);
+        emit UpgradeCancelled(gnosisSafe, mockImplementation);
+
+        vm.prank(gnosisSafe);
+        govInstance.cancelUpgrade();
+
+        // Verify upgrade was cancelled
+        (,, exists) = govInstance.pendingUpgrade();
+        assertFalse(exists);
+    }
+
+    // Test error when trying to cancel non-existent upgrade
+    function testRevert_CancelUpgradeNoScheduledUpgrade() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSignature("UpgradeNotScheduled()"));
+        govInstance.cancelUpgrade();
+    }
+
+    // Test for the uncovered supportsInterface function
+    function test_SupportsInterface() public {
+        // Test for IGovernor interface
+        bytes4 governorInterfaceId = type(IGovernor).interfaceId;
+        assertTrue(govInstance.supportsInterface(governorInterfaceId));
+
+        // Test for ERC165 interface
+        bytes4 erc165InterfaceId = 0x01ffc9a7;
+        assertTrue(govInstance.supportsInterface(erc165InterfaceId));
+
+        // Test for false case
+        bytes4 invalidInterfaceId = 0xffffffff;
+        assertFalse(govInstance.supportsInterface(invalidInterfaceId));
+    }
+
+    // Test proposalNeedsQueuing function
+    function test_ProposalNeedsQueuing() public {
+        // Create a proposal first
+        address[] memory winners = new address[](1);
+        winners[0] = alice;
+        vm.prank(managerAdmin);
+        ecoInstance.airdrop(winners, 200_000 ether);
+
+        vm.prank(alice);
+        tokenInstance.delegate(alice);
+        vm.roll(block.number + 1);
+
+        address[] memory targets = new address[](1);
+        targets[0] = address(tokenInstance);
+        uint256[] memory values = new uint256[](1);
+        values[0] = 0;
+        bytes[] memory calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature("transfer(address,uint256)", bob, 100);
+
+        vm.prank(alice);
+        uint256 proposalId = govInstance.propose(targets, values, calldatas, "Test proposal");
+
+        // Now check if this proposal needs queuing
+        bool needsQueuing = govInstance.proposalNeedsQueuing(proposalId);
+        assertTrue(needsQueuing, "Proposal should need queuing");
+    }
+
+    // Test _cancel function
+    function test_CancelProposal() public {
+        // Set up proposal
+        address[] memory winners = new address[](1);
+        winners[0] = alice;
+        vm.prank(managerAdmin);
+        ecoInstance.airdrop(winners, 200_000 ether);
+
+        vm.prank(alice);
+        tokenInstance.delegate(alice);
+
+        vm.roll(block.number + 1);
+
+        address[] memory targets = new address[](1);
+        targets[0] = address(tokenInstance);
+        uint256[] memory values = new uint256[](1);
+        values[0] = 0;
+        bytes[] memory calldatas = new bytes[](1);
+        calldatas[0] = abi.encodeWithSignature("transfer(address,uint256)", bob, 100);
+        string memory description = "Test proposal";
+
+        vm.prank(alice);
+        uint256 proposalId = govInstance.propose(targets, values, calldatas, description);
+
+        // Cancel the proposal
+        bytes32 descHash = keccak256(bytes(description));
+        vm.prank(alice); // The proposer can cancel
+        govInstance.cancel(targets, values, calldatas, descHash);
+
+        // Verify it was cancelled
+        assertEq(uint8(govInstance.state(proposalId)), uint8(IGovernor.ProposalState.Canceled));
     }
 
     function deployTimelock() internal {
