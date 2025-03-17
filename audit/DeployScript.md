@@ -1,5 +1,11 @@
 # DeployLendefiDAO Script Review
 
+## Scope
+
+- Contract: DeployLendefiDAO.s.sol
+- Version: v1
+- Framework: Foundry
+
 This is an excellent implementation of the deployment script! It's well-structured, robust, and follows best practices for deploying complex contract systems. Here's my assessment:
 
 ## Strengths
