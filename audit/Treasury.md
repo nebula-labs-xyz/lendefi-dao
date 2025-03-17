@@ -1,14 +1,14 @@
 # Security Audit Report: Lendefi DAO Treasury Contract
 
-## Executive Summary
-
-The Lendefi DAO Treasury contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract demonstrates strong security practices, with a well-implemented role-based access control system, timelocked upgrades, comprehensive vesting mechanisms, and secure emergency functions. No critical vulnerabilities were identified.
-
 ## Scope
 
 - Contract: Treasury.sol
 - Version: v1
 - Framework: OpenZeppelin Contracts Upgradeable v5
+
+## Executive Summary
+
+The Lendefi DAO Treasury contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract demonstrates strong security practices, with a well-implemented role-based access control system, timelocked upgrades, comprehensive vesting mechanisms, and secure emergency functions. No critical vulnerabilities were identified.
 
 ## Key Findings
 

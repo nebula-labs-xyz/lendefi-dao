@@ -1,14 +1,14 @@
 # Security Audit Report: Lendefi DAO Partner Vesting Contract
 
-## Executive Summary
-
-The PartnerVesting contract has been audited for security vulnerabilities and coding best practices. The contract implements a linear vesting schedule for Lendefi partners with appropriate access controls that allow beneficiaries (partners) to manage their vested tokens while giving the DAO (via timelock) the ability to cancel partnerships if necessary. No critical vulnerabilities were identified.
-
 ## Scope
 
 - Contract: PartnerVesting.sol
 - Version: v1
 - Framework: OpenZeppelin Contracts v5
+
+## Executive Summary
+
+The PartnerVesting contract has been audited for security vulnerabilities and coding best practices. The contract implements a linear vesting schedule for Lendefi partners with appropriate access controls that allow beneficiaries (partners) to manage their vested tokens while giving the DAO (via timelock) the ability to cancel partnerships if necessary. No critical vulnerabilities were identified.
 
 ## Key Findings
 

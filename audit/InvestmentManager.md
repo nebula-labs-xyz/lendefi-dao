@@ -1,14 +1,15 @@
 # Security Audit Report: Lendefi DAO Investment Manager
 
-## Executive Summary
-
-The Investment Manager contract has been audited following the implementation of standardized security patterns across the Lendefi DAO ecosystem. The contract demonstrates robust security controls with a well-implemented role-based access control system, timelocked upgrades, and comprehensive investment round management. One notable deviation from other ecosystem contracts is the assignment of certain critical roles to a gnosis safe multisig rather than the timelock controller.
-
 ## Scope
 
 - Contract: InvestmentManager.sol
 - Version: v1
 - Framework: OpenZeppelin Contracts Upgradeable v5
+
+## Executive Summary
+
+The Investment Manager contract has been audited following the implementation of standardized security patterns across the Lendefi DAO ecosystem. The contract demonstrates robust security controls with a well-implemented role-based access control system, timelocked upgrades, and comprehensive investment round management. One notable deviation from other ecosystem contracts is the assignment of certain critical roles to a gnosis safe multisig rather than the timelock controller.
+
 
 ## Key Findings
 

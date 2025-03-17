@@ -1,14 +1,14 @@
 # Security Audit Report: Lendefi DAO Investor Vesting Contract
 
-## Executive Summary
-
-The InvestorVesting contract has been audited for security vulnerabilities and coding best practices. This contract implements a linear vesting schedule for Lendefi investors, allowing beneficiaries to claim tokens as they vest over time. The contract follows a conservative design approach and leverages tested OpenZeppelin libraries. No critical vulnerabilities were identified.
-
 ## Scope
 
 - Contract: InvestorVesting.sol
 - Version: v1 (Solidity 0.8.23)
 - Framework: OpenZeppelin Contracts v5
+
+## Executive Summary
+
+The InvestorVesting contract has been audited for security vulnerabilities and coding best practices. This contract implements a linear vesting schedule for Lendefi investors, allowing beneficiaries to claim tokens as they vest over time. The contract follows a conservative design approach and leverages tested OpenZeppelin libraries. No critical vulnerabilities were identified.
 
 ## Key Findings
 

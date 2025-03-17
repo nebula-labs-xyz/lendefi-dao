@@ -1,15 +1,15 @@
 
 # Security Audit Report: Lendefi DAO Governance Token
 
-## Executive Summary
-
-The Lendefi DAO Governance Token contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract exhibits strong security fundamentals with role-based access control, timelocked upgrade procedures, proper supply management, and secure bridge functionality. No critical vulnerabilities were identified.
-
 ## Scope
 
 - Contract: GovernanceToken.sol
 - Version: v1
 - Framework: OpenZeppelin Contracts Upgradeable v5
+
+## Executive Summary
+
+The Lendefi DAO Governance Token contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract exhibits strong security fundamentals with role-based access control, timelocked upgrade procedures, proper supply management, and secure bridge functionality. No critical vulnerabilities were identified.
 
 ## Key Findings
 

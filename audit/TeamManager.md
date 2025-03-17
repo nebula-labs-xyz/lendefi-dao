@@ -1,14 +1,14 @@
 # Security Audit Report: Lendefi DAO Team Manager Contract
 
-## Executive Summary
-
-The TeamManager contract has been audited following the implementation of standardized security patterns across the Lendefi DAO ecosystem. The contract exhibits strong security practices including a well-implemented role-based access control system, timelocked upgrades, comprehensive input validation, and secure fund management. No critical vulnerabilities were identified.
-
 ## Scope
 
 - Contract: TeamManager.sol
 - Version: v1
 - Framework: OpenZeppelin Contracts Upgradeable v5
+
+## Executive Summary
+
+The TeamManager contract has been audited following the implementation of standardized security patterns across the Lendefi DAO ecosystem. The contract exhibits strong security practices including a well-implemented role-based access control system, timelocked upgrades, comprehensive input validation, and secure fund management. No critical vulnerabilities were identified.
 
 ## Key Findings
 
