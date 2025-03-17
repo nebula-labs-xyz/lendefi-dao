@@ -48,6 +48,13 @@ interface ITEAMMANAGER {
     );
 
     /**
+     * @notice Emitted when a scheduled upgrade is cancelled
+     * @param canceller The address that cancelled the upgrade
+     * @param implementation The implementation address that was cancelled
+     */
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
+
+    /**
      * @dev Error thrown when an address parameter is zero
      */
     error ZeroAddress();
@@ -186,4 +193,14 @@ interface ITEAMMANAGER {
      * @return Address of the timelock controller
      */
     function timelock() external view returns (address);
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Removes a pending upgrade from the schedule
+     * @custom:access Restricted to UPGRADER_ROLE
+     * @custom:state-changes
+     *      - Clears the pendingUpgrade data
+     *      - Emits an UpgradeCancelled event
+     */
+    function cancelUpgrade() external;
 }
