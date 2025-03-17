@@ -19,6 +19,7 @@ contract TreasuryTest is BasicDeploy {
     event Initialized(address indexed initializer, uint256 startTime, uint256 duration);
     event EmergencyWithdrawal(address indexed token, address indexed to, uint256 amount);
     event Upgraded(address indexed upgrader, address indexed implementation, uint32 version);
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
     event Received(address indexed src, uint256 amount);
 
     receive() external payable {
@@ -776,6 +777,38 @@ contract TreasuryTest is BasicDeploy {
     // Test full upgrade flow with timelock
     function testTreasuryUpgradeWithTimelock() public {
         deployTreasuryUpgrade();
+    }
+
+    // Test cancelling an upgrade
+    function test_CancelUpgrade() public {
+        address mockImplementation = address(0xABCD);
+
+        // Schedule an upgrade first
+        vm.prank(gnosisSafe); // Has UPGRADER_ROLE
+        treasuryInstance.scheduleUpgrade(mockImplementation);
+
+        // Verify upgrade is scheduled
+        (address impl,, bool exists) = treasuryInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(impl, mockImplementation);
+
+        // Now cancel it
+        vm.expectEmit(true, true, false, false);
+        emit UpgradeCancelled(gnosisSafe, mockImplementation);
+
+        vm.prank(gnosisSafe);
+        treasuryInstance.cancelUpgrade();
+
+        // Verify upgrade was cancelled
+        (,, exists) = treasuryInstance.pendingUpgrade();
+        assertFalse(exists);
+    }
+
+    // Test error when trying to cancel non-existent upgrade
+    function testRevert_CancelUpgradeNoScheduledUpgrade() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSignature("UpgradeNotScheduled()"));
+        treasuryInstance.cancelUpgrade();
     }
 
     // Test emergency withdrawal of ETH always goes to timelock
