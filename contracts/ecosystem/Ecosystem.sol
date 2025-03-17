@@ -354,7 +354,7 @@ contract Ecosystem is
      * @custom:throws MaxBurnLimit if the amount exceeds the maximum burn limit
      * @custom:throws BurnSupplyLimit if the amount exceeds available supply
      */
-    function burn(uint256 amount) external nonReentrant whenNotPaused onlyRole(BURNER_ROLE) nonZeroAmount(amount) {
+    function burn(uint256 amount) external nonReentrant whenNotPaused nonZeroAmount(amount) onlyRole(BURNER_ROLE) {
         // Check if the amount exceeds the max burn first (cheaper check)
         if (amount > maxBurn) {
             revert MaxBurnLimit(amount, maxBurn);
@@ -468,6 +468,19 @@ contract Ecosystem is
 
         // Emit event with the partner address and returned amount
         emit CancelPartnership(partner, returnedAmount);
+    }
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
     }
 
     // ============ Limit Management Functions ============
