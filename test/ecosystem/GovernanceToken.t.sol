@@ -16,6 +16,7 @@ contract GovernanceTokenTest is BasicDeploy {
     event BridgeMint(address indexed src, address indexed to, uint256 amount);
     event TGE(uint256 amount);
     event MaxBridgeUpdated(address indexed admin, uint256 oldMaxBridge, uint256 newMaxBridge);
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
 
     // Define the error types directly
     error InvalidAddress(address provided, string reason);
@@ -381,6 +382,113 @@ contract GovernanceTokenTest is BasicDeploy {
         vm.prank(address(timelockInstance));
         tokenInstance.revokeRole(PAUSER_ROLE, pauser);
         assertFalse(tokenInstance.hasRole(PAUSER_ROLE, pauser));
+    }
+
+    /**
+     * @notice Tests successful cancellation of a scheduled upgrade
+     */
+    function testCancelUpgrade() public {
+        // Schedule an upgrade first
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tokenInstance.scheduleUpgrade(newImpl);
+
+        // Verify upgrade is scheduled
+        assertTrue(tokenInstance.upgradeTimelockRemaining() > 0);
+
+        // Cancel the upgrade
+        vm.prank(gnosisSafe);
+        vm.expectEmit(true, true, false, false);
+        emit UpgradeCancelled(gnosisSafe, newImpl);
+        tokenInstance.cancelUpgrade();
+
+        // Verify upgrade is cancelled (upgradeTimelockRemaining should be 0)
+        assertEq(tokenInstance.upgradeTimelockRemaining(), 0);
+
+        // Verify pendingUpgrade struct is cleared
+        (address impl, uint64 scheduledTime, bool exists) = tokenInstance.pendingUpgrade();
+        assertFalse(exists);
+        assertEq(impl, address(0));
+        assertEq(scheduledTime, 0);
+    }
+
+    /**
+     * @notice Tests that cancelUpgrade reverts when no upgrade is scheduled
+     */
+    function testRevert_CancelUpgrade_NoScheduledUpgrade() public {
+        // Attempt to cancel when no upgrade is scheduled
+        vm.prank(gnosisSafe);
+        vm.expectRevert(GovernanceToken.UpgradeNotScheduled.selector);
+        tokenInstance.cancelUpgrade();
+    }
+
+    /**
+     * @notice Tests that cancelUpgrade reverts when called by unauthorized account
+     */
+    function testRevert_CancelUpgrade_Unauthorized() public {
+        // Schedule an upgrade first
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tokenInstance.scheduleUpgrade(newImpl);
+
+        // Try to cancel from non-upgrader account
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, UPGRADER_ROLE);
+
+        vm.prank(alice);
+        vm.expectRevert(expError);
+        tokenInstance.cancelUpgrade();
+
+        // Verify upgrade is still scheduled
+        assertTrue(tokenInstance.upgradeTimelockRemaining() > 0);
+    }
+
+    /**
+     * @notice Tests scheduling a new upgrade after cancellation
+     */
+    function testScheduleAfterCancellation() public {
+        // Schedule first upgrade
+        address firstImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tokenInstance.scheduleUpgrade(firstImpl);
+
+        // Cancel the upgrade
+        vm.prank(gnosisSafe);
+        tokenInstance.cancelUpgrade();
+
+        // Schedule a new upgrade
+        address secondImpl = address(0x5678);
+        vm.prank(gnosisSafe);
+        tokenInstance.scheduleUpgrade(secondImpl);
+
+        // Verify new upgrade is scheduled
+        assertTrue(tokenInstance.upgradeTimelockRemaining() > 0);
+
+        // Verify correct implementation is scheduled
+        (address impl,,) = tokenInstance.pendingUpgrade();
+        assertEq(impl, secondImpl);
+    }
+
+    /**
+     * @notice Tests that upgrade fails after cancellation
+     */
+    function testRevert_UpgradeAfterCancellation() public {
+        // Schedule an upgrade
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tokenInstance.scheduleUpgrade(newImpl);
+
+        // Wait for timelock to expire
+        vm.warp(block.timestamp + 3 days + 1);
+
+        // Cancel the upgrade
+        vm.prank(gnosisSafe);
+        tokenInstance.cancelUpgrade();
+
+        // Try to upgrade - should fail because upgrade was cancelled
+        vm.prank(gnosisSafe);
+        vm.expectRevert(GovernanceToken.UpgradeNotScheduled.selector);
+        tokenInstance.upgradeToAndCall(newImpl, "");
     }
 
     function _initializeTGE() internal {
