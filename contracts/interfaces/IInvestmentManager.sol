@@ -76,6 +76,13 @@ interface IINVMANAGER {
     );
 
     /**
+     * @notice Emitted when a scheduled upgrade is cancelled
+     * @param canceller The address that cancelled the upgrade
+     * @param implementation The implementation address that was cancelled
+     */
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
+
+    /**
      * @dev Emitted when contract implementation is upgraded
      * @param upgrader Address that performed the upgrade
      * @param implementation New implementation address
