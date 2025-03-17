@@ -8,7 +8,7 @@ The LendefiGovernor contract has been audited following the implementation of st
 
 - Contract: LendefiGovernor.sol
 - Version: v1
-- Framework: OpenZeppelin Contracts Upgradeable v4
+- Framework: OpenZeppelin Contracts Upgradeable v5
 
 ## Key Findings
 
