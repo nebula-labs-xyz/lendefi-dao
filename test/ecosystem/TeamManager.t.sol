@@ -10,6 +10,7 @@ contract TeamManagerTest is BasicDeploy {
 
     event EtherReleased(address indexed to, uint256 amount);
     event ERC20Released(address indexed token, address indexed to, uint256 amount);
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
 
     function setUp() public {
         vm.warp(365 days);
@@ -602,6 +603,229 @@ contract TeamManagerTest is BasicDeploy {
         (bool success,) = address(tmInstance).call(abi.encodeWithSignature("upgradeTo(address)", address(0x1234)));
         // Since we're expecting a revert, success should be false
         assertFalse(success);
+    }
+
+    // Test cancelUpgrade when an upgrade is properly scheduled
+    function testCancelUpgrade() public {
+        // Schedule an upgrade first
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+
+        // Verify upgrade is scheduled
+        (address impl,, bool exists) = tmInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(impl, newImpl);
+
+        // Cancel the upgrade
+        vm.prank(gnosisSafe);
+        vm.expectEmit(true, true, false, false);
+        emit UpgradeCancelled(gnosisSafe, newImpl);
+        tmInstance.cancelUpgrade();
+
+        // Verify upgrade is cancelled
+        (,, exists) = tmInstance.pendingUpgrade();
+        assertFalse(exists);
+
+        // Verify timelock remaining is now 0
+        assertEq(tmInstance.upgradeTimelockRemaining(), 0);
+    }
+
+    // Test cancelUpgrade when no upgrade is scheduled
+    function testRevert_CancelUpgradeNotScheduled() public {
+        // Try to cancel when no upgrade is scheduled
+        vm.prank(gnosisSafe);
+        vm.expectRevert(ITEAMMANAGER.UpgradeNotScheduled.selector);
+        tmInstance.cancelUpgrade();
+    }
+
+    // Test cancelUpgrade with unauthorized account
+    function testRevert_CancelUpgradeUnauthorized() public {
+        // Schedule an upgrade first
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+
+        // Try to cancel without proper role
+        bytes memory expError =
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, UPGRADER_ROLE);
+
+        vm.prank(alice);
+        vm.expectRevert(expError);
+        tmInstance.cancelUpgrade();
+
+        // Verify upgrade is still scheduled
+        (,, bool exists) = tmInstance.pendingUpgrade();
+        assertTrue(exists);
+    }
+
+    // Test that you can schedule a new upgrade after cancellation
+    function testScheduleAfterCancellation() public {
+        // Schedule first upgrade
+        address firstImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(firstImpl);
+
+        // Cancel the upgrade
+        vm.prank(gnosisSafe);
+        tmInstance.cancelUpgrade();
+
+        // Schedule a new upgrade
+        address secondImpl = address(0x5678);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(secondImpl);
+
+        // Verify new upgrade is scheduled
+        (address impl,, bool exists) = tmInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(impl, secondImpl);
+    }
+
+    // Test cancellation then attempt to upgrade
+    function testRevert_UpgradeAfterCancellation() public {
+        // Schedule an upgrade
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+
+        // Cancel the upgrade
+        vm.prank(gnosisSafe);
+        tmInstance.cancelUpgrade();
+
+        // Try to upgrade - should fail because upgrade was cancelled
+        vm.prank(gnosisSafe);
+        vm.expectRevert(ITEAMMANAGER.UpgradeNotScheduled.selector);
+        tmInstance.upgradeToAndCall(newImpl, "");
+    }
+
+    function testRevert_ScheduleUpgradeZeroAddress() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
+        tmInstance.scheduleUpgrade(address(0));
+    }
+
+    function testUpgradeTimelockRemainingNoSchedule() public {
+        // When no upgrade is scheduled, should return 0
+        assertEq(tmInstance.upgradeTimelockRemaining(), 0);
+    }
+
+    function testUpgradeProcessWithMultipleRoles() public {
+        // Schedule by gnosisSafe
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+
+        // Try to cancel from non-upgrader (should fail)
+        vm.prank(alice);
+        vm.expectRevert(
+            abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", alice, UPGRADER_ROLE)
+        );
+        tmInstance.cancelUpgrade();
+
+        // Cancel from proper role (gnosisSafe)
+        vm.prank(gnosisSafe);
+        tmInstance.cancelUpgrade();
+
+        // Schedule again
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+
+        // Warp past timelock
+        vm.warp(block.timestamp + 3 days + 1);
+
+        // Verify timelock expired
+        assertEq(tmInstance.upgradeTimelockRemaining(), 0);
+    }
+
+    /**
+     * @notice Tests that version is incremented after a successful upgrade
+     */
+    function test_VersionIncrementAfterUpgrade() public {
+        // Get initial version
+        uint32 initialVersion = tmInstance.version();
+
+        // Deploy a new implementation
+        TeamManager newImplementation = new TeamManager();
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(address(newImplementation));
+
+        // Wait for timelock to expire
+        vm.warp(block.timestamp + 3 days + 1);
+
+        // Perform upgrade
+        vm.prank(gnosisSafe);
+        tmInstance.upgradeToAndCall(address(newImplementation), "");
+
+        // Verify version was incremented
+        assertEq(tmInstance.version(), initialVersion + 1, "Version should be incremented after upgrade");
+    }
+
+    /**
+     * @notice Tests edge cases of upgradeTimelockRemaining calculation
+     */
+    function test_UpgradeTimelockRemainingEdgeCases() public {
+        // Case 1: No upgrade scheduled
+        assertEq(tmInstance.upgradeTimelockRemaining(), 0, "Should return 0 when no upgrade scheduled");
+
+        // Case 2: Upgrade just scheduled (full timelock remaining)
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+        assertEq(
+            tmInstance.upgradeTimelockRemaining(), 3 days, "Should return full duration immediately after scheduling"
+        );
+
+        // Case 3: Exactly at timelock expiry
+        vm.warp(block.timestamp + 3 days);
+        assertEq(tmInstance.upgradeTimelockRemaining(), 0, "Should return 0 exactly at expiry");
+
+        // Case 4: After timelock expired
+        vm.warp(block.timestamp + 1);
+        assertEq(tmInstance.upgradeTimelockRemaining(), 0, "Should return 0 after expiry");
+
+        // Case 5: Schedule again after expiry
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+        assertEq(tmInstance.upgradeTimelockRemaining(), 3 days, "Should reset to full duration on rescheduling");
+    }
+
+    /**
+     * @notice Test that upgrade fails if the implementation address doesn't match the scheduled one
+     */
+    function testRevert_UpgradeWithWrongImplementation() public {
+        // Schedule an upgrade with one implementation
+        address scheduledImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(scheduledImpl);
+
+        // Try to upgrade with a different implementation
+        address wrongImpl = address(0x5678);
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSelector(ITEAMMANAGER.ImplementationMismatch.selector, scheduledImpl, wrongImpl));
+        tmInstance.upgradeToAndCall(wrongImpl, "");
+    }
+
+    /**
+     * @notice Test that upgrade fails if the timelock is still active
+     */
+    function testRevert_UpgradeTimelockStillActive() public {
+        // Schedule an upgrade
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        tmInstance.scheduleUpgrade(newImpl);
+
+        // Try to upgrade before timelock expires
+        // Advance time, but not enough to clear timelock
+        vm.warp(block.timestamp + 1 days); // Timelock is 3 days
+
+        // Remaining time should be 2 days
+        uint256 remainingTime = 2 days;
+
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSelector(ITEAMMANAGER.UpgradeTimelockActive.selector, remainingTime));
+        tmInstance.upgradeToAndCall(newImpl, "");
     }
 
     function testFullUpgradeProcess() public {
