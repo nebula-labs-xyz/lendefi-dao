@@ -8,7 +8,7 @@ The Lendefi DAO Treasury contract has been audited following the implementation 
 
 - Contract: Treasury.sol
 - Version: v1
-- Framework: OpenZeppelin Contracts Upgradeable v4
+- Framework: OpenZeppelin Contracts Upgradeable v5
 
 ## Key Findings
 
