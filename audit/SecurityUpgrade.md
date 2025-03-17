@@ -77,6 +77,7 @@ The following contracts now share consistent security patterns:
   ```
 - **Core Functions**:
   - `scheduleUpgrade(address)` for initiating the timelock
+  - `cancelUpgrade(address)` for clearing the timelock
   - `upgradeTimelockRemaining()` for transparency
   - `_authorizeUpgrade(address)` with timelock enforcement
 
