@@ -120,6 +120,13 @@ contract GovernanceToken is
     );
 
     /**
+     * @notice Emitted when a scheduled upgrade is cancelled
+     * @param canceller The address that cancelled the upgrade
+     * @param implementation The implementation address that was cancelled
+     */
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
+
+    /**
      * @dev Upgrade Event.
      * @param src sender address
      * @param implementation address
@@ -357,6 +364,19 @@ contract GovernanceToken is
         pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
 
         emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
     }
 
     /**
