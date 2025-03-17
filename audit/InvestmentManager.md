@@ -8,7 +8,7 @@ The Investment Manager contract has been audited following the implementation of
 
 - Contract: InvestmentManager.sol
 - Version: v1
-- Framework: OpenZeppelin Contracts Upgradeable v4
+- Framework: OpenZeppelin Contracts Upgradeable v5
 
 ## Key Findings
 
