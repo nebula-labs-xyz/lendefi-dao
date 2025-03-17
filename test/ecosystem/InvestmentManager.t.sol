@@ -43,6 +43,7 @@ contract InvestmentManagerTest is BasicDeploy {
         address indexed caller, uint32 indexed roundId, uint256 totalEthRaised, uint256 totalTokensDistributed
     );
     event EmergencyWithdrawal(address indexed token, uint256 amount);
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
 
     receive() external payable {
         if (msg.sender == address(manager)) {
@@ -84,6 +85,10 @@ contract InvestmentManagerTest is BasicDeploy {
         assertEq(amount, 0);
     }
     // ============ Basic Functionality Tests ============
+
+    function testGetEcosystemToken() public {
+        assertEq(manager.getEcosystemToken(), address(tokenInstance));
+    }
 
     function testPauseByPauser() public {
         vm.startPrank(guardian);
@@ -2868,6 +2873,89 @@ contract InvestmentManagerTest is BasicDeploy {
         manager.claimRefund(roundId);
     }
 
+    // ============ Upgrade Error Conditions ============
+    function testRevert_UpgradeWithoutScheduling() public {
+        // Attempt upgrade without scheduling
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        vm.expectRevert(IINVMANAGER.UpgradeNotScheduled.selector);
+        manager.upgradeToAndCall(newImpl, "");
+    }
+
+    function testRevert_UpgradeWithWrongImplementation() public {
+        // Schedule upgrade with one implementation
+        address scheduledImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        manager.scheduleUpgrade(scheduledImpl);
+
+        // Try to upgrade with different implementation
+        address wrongImpl = address(0x5678);
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSelector(IINVMANAGER.ImplementationMismatch.selector, scheduledImpl, wrongImpl));
+        manager.upgradeToAndCall(wrongImpl, "");
+    }
+
+    function testRevert_UpgradeTimelockActive() public {
+        // Schedule upgrade
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        manager.scheduleUpgrade(newImpl);
+
+        // Try to upgrade before timelock expires
+        vm.expectRevert(IINVMANAGER.UpgradeTimelockActive.selector);
+        vm.prank(gnosisSafe);
+        (bool success,) = address(manager).call(abi.encodeWithSignature("upgradeToAndCall(address,bytes)", newImpl, ""));
+        assertFalse(success);
+    }
+
+    function testUpgradeTimelockRemaining() public {
+        // No scheduled upgrade
+        assertEq(manager.upgradeTimelockRemaining(), 0, "Should return 0 when no upgrade scheduled");
+
+        // Schedule an upgrade
+        address newImpl = address(0x1234);
+        vm.prank(gnosisSafe);
+        manager.scheduleUpgrade(newImpl);
+
+        // Should return non-zero value when timelock is active
+        assertTrue(manager.upgradeTimelockRemaining() > 0, "Should return remaining time during timelock");
+
+        // After timelock expires
+        vm.warp(block.timestamp + 3 days + 1);
+        assertEq(manager.upgradeTimelockRemaining(), 0, "Should return 0 after timelock expires");
+    }
+
+    // Test cancelling an upgrade
+    function testCancelUpgrade() public {
+        address mockImplementation = address(0xABCD);
+
+        // Schedule an upgrade first
+        vm.prank(gnosisSafe); // Has UPGRADER_ROLE
+        manager.scheduleUpgrade(mockImplementation);
+
+        // Verify upgrade is scheduled
+        (address impl,, bool exists) = manager.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(impl, mockImplementation);
+
+        // Now cancel it
+        vm.expectEmit(true, true, false, false);
+        emit UpgradeCancelled(gnosisSafe, mockImplementation);
+
+        vm.prank(gnosisSafe);
+        manager.cancelUpgrade();
+
+        // Verify upgrade was cancelled
+        (,, exists) = manager.pendingUpgrade();
+        assertFalse(exists);
+    }
+
+    // Test error when trying to cancel non-existent upgrade
+    function testRevert_CancelUpgradeNoScheduledUpgrade() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSignature("UpgradeNotScheduled()"));
+        manager.cancelUpgrade();
+    }
     // ============ Emergency Withdrawal Tests ============
 
     function test_EmergencyWithdrawToken() public {
