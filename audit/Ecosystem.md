@@ -1,5 +1,11 @@
 # Security Audit Report: Lendefi Ecosystem Contract
 
+## Scope
+
+- Contract: Ecosystem.sol
+- Version: v1
+- Framework: OpenZeppelin Contracts Upgradeable v5
+
 ## Summary
 
 This is the final audit report for the Lendefi Ecosystem contract after implementation and comprehensive testing. The contract manages token distribution for airdrops, rewards, burning, and partner vesting, with role-based access controls, security mechanisms, and a timelock-protected upgrade pattern.
