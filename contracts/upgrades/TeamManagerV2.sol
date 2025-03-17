@@ -215,9 +215,22 @@ contract TeamManagerV2 is
     }
 
     /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
+    }
+    /**
      * @dev Returns the remaining time before a scheduled upgrade can be executed
      * @return timeRemaining The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
      */
+
     function upgradeTimelockRemaining() external view returns (uint256) {
         return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
             ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
