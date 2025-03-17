@@ -99,6 +99,13 @@ interface IECOSYSTEM {
     );
 
     /**
+     * @notice Emitted when a scheduled upgrade is cancelled
+     * @param canceller The address that cancelled the upgrade
+     * @param implementation The implementation address that was cancelled
+     */
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
+
+    /**
      * @dev Emitted when an emergency withdrawal is executed
      * @param token Address of the token withdrawn
      * @param amount Amount withdrawn
@@ -404,4 +411,14 @@ interface IECOSYSTEM {
      * @return The vesting contract address
      */
     function vestingContracts(address partner) external view returns (address);
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Removes a pending upgrade from the schedule
+     * @custom:access Restricted to UPGRADER_ROLE
+     * @custom:state-changes
+     *      - Clears the pendingUpgrade data
+     *      - Emits an UpgradeCancelled event
+     */
+    function cancelUpgrade() external;
 }
