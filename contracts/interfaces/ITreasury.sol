@@ -135,6 +135,12 @@ interface ITREASURY {
         address indexed sender, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
     );
 
+    /**
+     * @notice Emitted when a scheduled upgrade is cancelled
+     * @param canceller The address that cancelled the upgrade
+     * @param implementation The implementation address that was cancelled
+     */
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
     /* ========== FUNCTIONS ========== */
 
     /**
