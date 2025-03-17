@@ -8,7 +8,7 @@ The TeamManager contract has been audited following the implementation of standa
 
 - Contract: TeamManager.sol
 - Version: v1
-- Framework: OpenZeppelin Contracts Upgradeable v4
+- Framework: OpenZeppelin Contracts Upgradeable v5
 
 ## Key Findings
 
