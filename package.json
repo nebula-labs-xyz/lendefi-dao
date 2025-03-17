@@ -12,7 +12,8 @@
   "scripts": {
     "build": "forge clean && forge build",
     "build:optimized": "FOUNDRY_PROFILE=optimized forge build",
-    "coverage": "forge coverage --ffi",
+    "coverage": "forge coverage --report lcov --ffi",
+    "coverage:html": "genhtml lcov.info -o coverage-report",
     "deploy:mainnet": "bash -c 'source .env && forge script Deploy --broadcast --chain mainnet --private-key $MAINNET_DEPLOYER_PK'",
     "deploy:sepolia": "bash -c 'source .env && forge script Deploy --broadcast --chain sepolia --private-key $SEPOLIA_DEPLOYER_PK'",
     "lint:check": "npm run lint:sol-tests && npm run lint:sol-logic && forge fmt --check",
@@ -25,8 +26,9 @@
     "solhint": "./node_modules/.bin/solhint -f table contracts/**/*.sol",
     "test": "forge test -vvv --ffi",
     "test:integration": "forge test --match-contract Unit -vvv --ffi",
-    "test:unit": "forge test --match-contract InvestmentManager -vvv --ffi",
-    "test:unit:deep": "FOUNDRY_FUZZ_RUNS=5000 npm run test:unit"
+    "test:unit": "forge test --match-contract TeamManagerTest -vvv --ffi",
+    "test:unit:deep": "FOUNDRY_FUZZ_RUNS=5000 npm run test:unit",
+    "unit:lcov": "forge coverage --match-path 'test/ecosystem/TeamManager.t.sol' --report lcov --ffi"
   },
   "lint-staged": {
     "./contracts/**/*.sol": "forge fmt && npm run lint:sol-logic",
