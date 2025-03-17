@@ -155,7 +155,7 @@ contract InvestmentManager is
      * @dev Holds information about a pending contract upgrade
      * @notice Implements the timelock upgrade security pattern
      */
-    UpgradeRequest private pendingUpgrade;
+    UpgradeRequest public pendingUpgrade;
 
     /**
      * @dev Reserved storage slots for future upgrades
@@ -213,10 +213,10 @@ contract InvestmentManager is
      * @param amount The amount to check
      * @custom:throws InvalidAmount if the amount is zero
      */
-    modifier nonZeroAmount(uint256 amount) {
-        if (amount == 0) revert InvalidAmount(amount);
-        _;
-    }
+    // modifier nonZeroAmount(uint256 amount) {
+    //     if (amount == 0) revert InvalidAmount(amount);
+    //     _;
+    // }
 
     // ============ Constructor & Initializer ============
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -322,6 +322,19 @@ contract InvestmentManager is
         pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
 
         emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
     }
 
     /**
@@ -856,6 +869,7 @@ contract InvestmentManager is
      */
     function _updateRoundStatus(uint32 roundId, RoundStatus newStatus) internal {
         Round storage round_ = rounds[roundId];
+        // Failsafe: This condition should never be true due to validation in calling functions
         if (uint8(newStatus) <= uint8(round_.status)) {
             revert InvalidStatusTransition(round_.status, newStatus);
         }
