@@ -32,6 +32,7 @@ out
 # Docs
 docs/
 docs2/
+coverage-report/
 forge-doc.json
 
 
