@@ -20,6 +20,7 @@ contract EcosystemTest is BasicDeploy {
     event MaxBurnUpdated(address indexed updater, uint256 oldValue, uint256 newValue);
     event Initialized(address indexed initializer);
     event Upgrade(address indexed upgrader, address indexed newImplementation, uint32 version);
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
     event UpgradeScheduled(
         address indexed sender, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
     );
@@ -556,14 +557,46 @@ contract EcosystemTest is BasicDeploy {
 
     function testRevert_BurnBranch5() public {
         // First grant the BURNER_ROLE to the address we'll use
+        // First grant the BURNER_ROLE
         vm.prank(address(timelockInstance));
-        ecoInstance.grantRole(BURNER_ROLE, address(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496));
+        ecoInstance.grantRole(BURNER_ROLE, address(0x9999990));
 
-        uint256 amount = ecoInstance.maxBurn() + 1 ether;
+        // First increase the maxBurn to a much higher value
+        uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
+        uint256 newMaxBurn = remainingRewards / 11; // Just under 10% limit
 
-        vm.prank(address(0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496));
-        vm.expectRevert(abi.encodeWithSelector(IECOSYSTEM.MaxBurnLimit.selector, amount, ecoInstance.maxBurn()));
-        ecoInstance.burn(amount);
+        vm.prank(address(timelockInstance));
+        ecoInstance.updateMaxBurn(newMaxBurn);
+
+        // Instead of looping through thousands of reward calls, directly modify state
+        // to simulate that most of the reward supply has been issued
+
+        // Define a small amount we want to leave available (1000 ether)
+        uint256 targetRemaining = 1000 ether;
+
+        // Calculate how much to set as issuedReward
+        uint256 totalRewardSupply = ecoInstance.rewardSupply();
+        uint256 newIssuedReward = totalRewardSupply - targetRemaining;
+
+        // Storage slot for issuedReward is at index 3 (0-based) in the contract
+        bytes32 issuedRewardSlot = bytes32(uint256(3));
+
+        // Store the new value directly
+        vm.store(address(ecoInstance), issuedRewardSlot, bytes32(newIssuedReward));
+
+        // Verify we set the state correctly
+        uint256 availableSupply = ecoInstance.availableRewardSupply();
+        assertEq(availableSupply, targetRemaining, "Available supply should be exactly the target amount");
+
+        // Verify our available supply is less than maxBurn (important for test)
+        assertTrue(availableSupply < ecoInstance.maxBurn(), "Available supply must be less than maxBurn for this test");
+
+        // Try to burn more than the available supply (but still within maxBurn limit)
+        vm.prank(address(0x9999990));
+        vm.expectRevert(
+            abi.encodeWithSelector(IECOSYSTEM.BurnSupplyLimit.selector, availableSupply + 1, availableSupply)
+        );
+        ecoInstance.burn(availableSupply + 1);
     }
 
     function testRevertCancelPartnershipUnauthorized() public {
@@ -839,7 +872,275 @@ contract EcosystemTest is BasicDeploy {
         );
     }
 
+    // Test cancelling an upgrade
+    function testCancelUpgrade() public {
+        address mockImplementation = address(0xABCD);
+
+        // Schedule an upgrade first
+        vm.prank(gnosisSafe); // Has UPGRADER_ROLE
+        ecoInstance.scheduleUpgrade(mockImplementation);
+
+        // Verify upgrade is scheduled
+        (address impl,, bool exists) = ecoInstance.pendingUpgrade();
+        assertTrue(exists);
+        assertEq(impl, mockImplementation);
+
+        // Now cancel it
+        vm.expectEmit(true, true, false, false);
+        emit UpgradeCancelled(gnosisSafe, mockImplementation);
+
+        vm.prank(gnosisSafe);
+        ecoInstance.cancelUpgrade();
+
+        // Verify upgrade was cancelled
+        (,, exists) = ecoInstance.pendingUpgrade();
+        assertFalse(exists);
+    }
+
+    // Test error when trying to cancel non-existent upgrade
+    function testRevert_CancelUpgradeNoScheduledUpgrade() public {
+        vm.prank(gnosisSafe);
+        vm.expectRevert(abi.encodeWithSignature("UpgradeNotScheduled()"));
+        ecoInstance.cancelUpgrade();
+    }
+
+    function testRevert_UpgradeWithoutScheduling() public {
+        // Create a new implementation
+        address newImplementation = address(new Ecosystem());
+
+        // Try to upgrade directly without scheduling first
+        vm.prank(gnosisSafe); // Has UPGRADER_ROLE
+        vm.expectRevert(abi.encodeWithSignature("UpgradeNotScheduled()"));
+
+        // This calls _authorizeUpgrade internally
+        ecoInstance.upgradeToAndCall(newImplementation, "");
+    }
+
+    // Test implementation mismatch error during upgrade
+    function testRevertUpgradeImplementationMismatch() public {
+        address scheduledImpl = address(0x1234);
+        address attemptedImpl = address(0x5678);
+
+        // Schedule upgrade with first implementation
+        vm.prank(gnosisSafe);
+        ecoInstance.scheduleUpgrade(scheduledImpl);
+
+        // Wait for timelock to expire
+        vm.warp(block.timestamp + 4 days);
+
+        // Try to upgrade with different implementation
+        vm.prank(gnosisSafe);
+        vm.expectRevert(
+            abi.encodeWithSelector(IECOSYSTEM.ImplementationMismatch.selector, scheduledImpl, attemptedImpl)
+        );
+
+        // This calls _authorizeUpgrade internally
+        ecoInstance.upgradeToAndCall(attemptedImpl, "");
+    }
+
+    // Test upgrade during active timelock period
+    function testRevertUpgradeTimelockActive() public {
+        address mockImplementation = address(0xABCD);
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        ecoInstance.scheduleUpgrade(mockImplementation);
+
+        // Try to upgrade before timelock expires (only 1 day passed)
+        vm.warp(block.timestamp + 1 days);
+
+        vm.prank(gnosisSafe);
+        vm.expectRevert(
+            abi.encodeWithSelector(
+                IECOSYSTEM.UpgradeTimelockActive.selector,
+                2 days // 3 days total - 1 day passed
+            )
+        );
+        ecoInstance.upgradeToAndCall(mockImplementation, "");
+    }
+
+    // Test version increment after successful upgrade
+    function testVersionIncrement() public {
+        uint32 initialVersion = ecoInstance.version();
+
+        // Perform complete upgrade process
+        address newImplementation = address(new Ecosystem());
+
+        // Schedule upgrade
+        vm.prank(gnosisSafe);
+        ecoInstance.scheduleUpgrade(newImplementation);
+
+        // Wait for timelock to expire
+        vm.warp(block.timestamp + 4 days);
+
+        // Complete the upgrade
+        vm.prank(gnosisSafe);
+        ecoInstance.upgradeToAndCall(newImplementation, "");
+
+        // Verify version incremented
+        assertEq(ecoInstance.version(), initialVersion + 1);
+    }
+
+    // Test invalid vesting schedule parameters
+    function testRevertAddPartnerInvalidVestingSchedule() public {
+        uint256 amount = 1000 ether;
+
+        // Test case 1: Duration too short
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("InvalidVestingSchedule()"));
+        ecoInstance.addPartner(partner, amount, 7 days, 29 days); // Less than MIN_VESTING_DURATION (30 days)
+
+        // Test case 2: Duration too long
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("InvalidVestingSchedule()"));
+        ecoInstance.addPartner(partner, amount, 365 days, 3700 days); // More than MAX_VESTING_DURATION (3650 days)
+
+        // Test case 3: Cliff >= Duration
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("InvalidVestingSchedule()"));
+        ecoInstance.addPartner(partner, amount, 730 days, 730 days); // Cliff equals duration
+    }
+
+    function test_UpdateMaxBurn() public {
+        uint256 oldMaxBurn = ecoInstance.maxBurn();
+        uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
+        uint256 newMaxBurn = remainingRewards / 20; // Half of the maximum allowed (10%)
+
+        vm.prank(address(timelockInstance));
+        vm.expectEmit(address(ecoInstance));
+        emit MaxBurnUpdated(address(timelockInstance), oldMaxBurn, newMaxBurn);
+        ecoInstance.updateMaxBurn(newMaxBurn);
+
+        assertEq(ecoInstance.maxBurn(), newMaxBurn, "Max burn should be updated");
+    }
+
+    function testRevert_UpdateMaxBurnExcessive() public {
+        uint256 remainingRewards = ecoInstance.rewardSupply() - ecoInstance.issuedReward();
+        uint256 maxAllowed = remainingRewards / 10; // 10% of remaining rewards
+        uint256 excessiveAmount = maxAllowed + 1 ether; // Just over 10%
+
+        vm.prank(address(timelockInstance));
+        vm.expectRevert(abi.encodeWithSignature("ExcessiveMaxValue(uint256,uint256)", excessiveAmount, maxAllowed));
+        ecoInstance.updateMaxBurn(excessiveAmount);
+    }
+
+    function testRevertRewardZeroAddress() public {
+        // First grant the REWARDER_ROLE to an address
+        vm.prank(address(timelockInstance));
+        ecoInstance.grantRole(REWARDER_ROLE, address(0x9999990));
+
+        // Try to reward a zero address
+        vm.prank(address(0x9999990));
+        vm.expectRevert(abi.encodeWithSignature("InvalidAddress()"));
+        ecoInstance.reward(address(0), 1 ether);
+    }
+
+    function test_ViewFunctions() public {
+        // Initial state after setup
+        uint256 initialRewardSupply = ecoInstance.rewardSupply();
+        uint256 initialAirdropSupply = ecoInstance.airdropSupply();
+        uint256 initialPartnershipSupply = ecoInstance.partnershipSupply();
+
+        // Initially, available should match total as nothing has been issued yet
+        assertEq(ecoInstance.availableRewardSupply(), initialRewardSupply);
+        assertEq(ecoInstance.availableAirdropSupply(), initialAirdropSupply);
+        assertEq(ecoInstance.availablePartnershipSupply(), initialPartnershipSupply);
+
+        // Issue some rewards
+        vm.prank(address(timelockInstance));
+        ecoInstance.grantRole(REWARDER_ROLE, address(0x9999990));
+
+        uint256 rewardAmount = 100 ether;
+        vm.prank(address(0x9999990));
+        ecoInstance.reward(assetRecipient, rewardAmount);
+
+        // Available supply should decrease
+        assertEq(ecoInstance.availableRewardSupply(), initialRewardSupply - rewardAmount);
+
+        // Do an airdrop
+        address[] memory recipients = new address[](2);
+        recipients[0] = alice;
+        recipients[1] = bob;
+        uint256 airdropAmount = 50 ether;
+
+        vm.prank(address(timelockInstance));
+        ecoInstance.airdrop(recipients, airdropAmount);
+
+        // Available airdrop supply should decrease by airdropAmount * recipients.length
+        assertEq(ecoInstance.availableAirdropSupply(), initialAirdropSupply - (airdropAmount * 2));
+    }
+
+    function test_AirdropWithZeroAddresses() public {
+        // Create an array with some zero addresses mixed in
+        address[] memory recipients = new address[](5);
+        recipients[0] = alice;
+        recipients[1] = address(0); // Zero address
+        recipients[2] = bob;
+        recipients[3] = address(0); // Zero address
+        recipients[4] = charlie;
+
+        uint256 initialAliceBalance = tokenInstance.balanceOf(alice);
+        uint256 initialBobBalance = tokenInstance.balanceOf(bob);
+        uint256 initialCharlieBalance = tokenInstance.balanceOf(charlie);
+        uint256 airdropAmount = 10 ether;
+
+        // Only 3 valid addresses should receive tokens
+        uint256 expectedTotalAmount = 3 * airdropAmount;
+        uint256 initialAirdropIssued = ecoInstance.issuedAirDrop();
+
+        vm.prank(address(timelockInstance));
+        ecoInstance.airdrop(recipients, airdropAmount);
+
+        // Check that tokens were only sent to non-zero addresses
+        assertEq(tokenInstance.balanceOf(alice), initialAliceBalance + airdropAmount);
+        assertEq(tokenInstance.balanceOf(bob), initialBobBalance + airdropAmount);
+        assertEq(tokenInstance.balanceOf(charlie), initialCharlieBalance + airdropAmount);
+
+        // Check that the issuedAirDrop was incremented correctly
+        assertEq(ecoInstance.issuedAirDrop(), initialAirdropIssued + expectedTotalAmount);
+    }
     // ============ Full Upgrade Flow Test ============
+
+    function test_CancelPartnershipAfterFullClaim() public {
+        uint256 amount = 1000 ether;
+
+        // Add a partner
+        vm.startPrank(address(timelockInstance));
+        ecoInstance.addPartner(partner, amount, 0, 30 days); // No cliff, short duration
+
+        // Get vesting contract address
+        address vestingContract = ecoInstance.vestingContracts(partner);
+        assertNotEq(vestingContract, address(0));
+        vm.stopPrank();
+
+        // Fast forward to after vesting period
+        vm.warp(block.timestamp + 31 days);
+
+        // Have partner claim all tokens first
+        vm.startPrank(partner);
+        PartnerVesting(vestingContract).release();
+        vm.stopPrank();
+
+        // Verify all tokens were claimed
+        assertEq(tokenInstance.balanceOf(vestingContract), 0);
+
+        // Initial balances before cancellation
+        uint256 initialTimelockBalance = tokenInstance.balanceOf(address(timelockInstance));
+        uint256 initialIssuedPartnership = ecoInstance.issuedPartnership();
+
+        // Cancel the partnership with zero tokens to return
+        vm.prank(address(timelockInstance));
+        ecoInstance.cancelPartnership(partner);
+
+        // Verify no tokens were transferred to timelock
+        assertEq(tokenInstance.balanceOf(address(timelockInstance)), initialTimelockBalance);
+
+        // Check accounting wasn't reduced (since no tokens were returned)
+        assertEq(ecoInstance.issuedPartnership(), initialIssuedPartnership);
+
+        // Verify the partnership was removed
+        assertEq(ecoInstance.vestingContracts(partner), address(0));
+    }
 
     function test_SuccessfulUpgrade() public {
         deployEcosystemUpgrade();
