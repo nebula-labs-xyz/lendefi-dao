@@ -242,7 +242,7 @@ contract GovernanceTokenTest is BasicDeploy {
         tokenInstance.grantRole(BRIDGE_ROLE, bridge);
 
         // Pause the contract
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.pause();
 
         // Try to bridge mint while paused
@@ -256,12 +256,12 @@ contract GovernanceTokenTest is BasicDeploy {
         _initializeTGE();
 
         // Test pause functionality
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.pause();
         assertTrue(tokenInstance.paused());
 
         // Test unpause functionality
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.unpause();
         assertFalse(tokenInstance.paused());
     }
@@ -277,7 +277,7 @@ contract GovernanceTokenTest is BasicDeploy {
 
     function testRevert_Unpause_Unauthorized() public {
         // First pause the contract
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.pause();
 
         bytes memory expError =
@@ -296,7 +296,7 @@ contract GovernanceTokenTest is BasicDeploy {
         tokenInstance.transfer(alice, 100 ether);
 
         // Pause the contract
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tokenInstance.pause();
 
         // Try to transfer while paused
@@ -308,8 +308,7 @@ contract GovernanceTokenTest is BasicDeploy {
 
     function testRevert_AuthorizeUpgrade_Unauthorized() public {
         // token deploy
-        bytes memory data =
-            abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance), gnosisSafe));
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance)));
         address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
         tokenInstance = GovernanceToken(proxy);
         address tokenImplementation = Upgrades.getImplementationAddress(proxy);
@@ -356,7 +355,7 @@ contract GovernanceTokenTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
-        tokenInstance.initializeUUPS(guardian, address(timelockInstance), gnosisSafe);
+        tokenInstance.initializeUUPS(guardian, address(timelockInstance));
     }
 
     function test_Transfer() public {
@@ -390,16 +389,16 @@ contract GovernanceTokenTest is BasicDeploy {
     function testCancelUpgrade() public {
         // Schedule an upgrade first
         address newImpl = address(0x1234);
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.scheduleUpgrade(newImpl);
 
         // Verify upgrade is scheduled
         assertTrue(tokenInstance.upgradeTimelockRemaining() > 0);
 
         // Cancel the upgrade
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         vm.expectEmit(true, true, false, false);
-        emit UpgradeCancelled(gnosisSafe, newImpl);
+        emit UpgradeCancelled(address(timelockInstance), newImpl);
         tokenInstance.cancelUpgrade();
 
         // Verify upgrade is cancelled (upgradeTimelockRemaining should be 0)
@@ -417,7 +416,7 @@ contract GovernanceTokenTest is BasicDeploy {
      */
     function testRevert_CancelUpgrade_NoScheduledUpgrade() public {
         // Attempt to cancel when no upgrade is scheduled
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         vm.expectRevert(GovernanceToken.UpgradeNotScheduled.selector);
         tokenInstance.cancelUpgrade();
     }
@@ -428,7 +427,7 @@ contract GovernanceTokenTest is BasicDeploy {
     function testRevert_CancelUpgrade_Unauthorized() public {
         // Schedule an upgrade first
         address newImpl = address(0x1234);
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.scheduleUpgrade(newImpl);
 
         // Try to cancel from non-upgrader account
@@ -449,16 +448,16 @@ contract GovernanceTokenTest is BasicDeploy {
     function testScheduleAfterCancellation() public {
         // Schedule first upgrade
         address firstImpl = address(0x1234);
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.scheduleUpgrade(firstImpl);
 
         // Cancel the upgrade
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.cancelUpgrade();
 
         // Schedule a new upgrade
         address secondImpl = address(0x5678);
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.scheduleUpgrade(secondImpl);
 
         // Verify new upgrade is scheduled
@@ -475,18 +474,18 @@ contract GovernanceTokenTest is BasicDeploy {
     function testRevert_UpgradeAfterCancellation() public {
         // Schedule an upgrade
         address newImpl = address(0x1234);
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.scheduleUpgrade(newImpl);
 
         // Wait for timelock to expire
         vm.warp(block.timestamp + 3 days + 1);
 
         // Cancel the upgrade
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         tokenInstance.cancelUpgrade();
 
         // Try to upgrade - should fail because upgrade was cancelled
-        vm.prank(gnosisSafe);
+        vm.prank(address(timelockInstance));
         vm.expectRevert(GovernanceToken.UpgradeNotScheduled.selector);
         tokenInstance.upgradeToAndCall(newImpl, "");
     }
