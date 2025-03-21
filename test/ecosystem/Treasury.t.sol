@@ -60,7 +60,7 @@ contract TreasuryTest is BasicDeploy {
     // Test: RevertInitializeTwice
     function testRevert_CantInitializeTwice() public {
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
-        treasuryInstance.initialize(guardian, address(timelockInstance), gnosisSafe, startTime, vestingDuration);
+        treasuryInstance.initialize(address(timelockInstance), gnosisSafe, startTime, vestingDuration);
     }
 
     // ============ Start Tests ============
@@ -388,7 +388,7 @@ contract TreasuryTest is BasicDeploy {
     // Fuzz Test: Only Pauser Can Pause or Unpause
     function testFuzzOnlyPauserCanPauseUnpause(address caller) public {
         vm.startPrank(caller);
-        if (caller != guardian) {
+        if (caller != address(timelockInstance)) {
             //guardian is pauser now
             bytes memory expError =
                 abi.encodeWithSignature("AccessControlUnauthorizedAccount(address,bytes32)", caller, PAUSER_ROLE);
