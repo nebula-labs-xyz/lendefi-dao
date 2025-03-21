@@ -125,7 +125,6 @@ contract EcosystemV2 is
      * @notice Sets up the initial state of the contract, including roles and token supplies.
      * @param token The address of the governance token.
      * @param timelockAddr The address of the timelock controller for partner vesting cancellation.
-     * @param guardian The address of the guardian (admin).
      * @param multisig The address of the pauser.
      * @custom:requires All input addresses must not be zero.
      * @custom:requires-role DEFAULT_ADMIN_ROLE for the guardian.
@@ -133,8 +132,8 @@ contract EcosystemV2 is
      * @custom:events-emits {Initialized} event.
      * @custom:throws ZeroAddressDetected if any of the input addresses are zero.
      */
-    function initialize(address token, address timelockAddr, address guardian, address multisig) external initializer {
-        if (token == address(0) || timelockAddr == address(0) || guardian == address(0) || multisig == address(0)) {
+    function initialize(address token, address timelockAddr, address multisig) external initializer {
+        if (token == address(0) || timelockAddr == address(0) || multisig == address(0)) {
             revert ZeroAddressDetected();
         }
 
@@ -145,7 +144,8 @@ contract EcosystemV2 is
         // Set up roles
         _grantRole(DEFAULT_ADMIN_ROLE, timelockAddr);
         _grantRole(MANAGER_ROLE, timelockAddr);
-        _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(PAUSER_ROLE, timelockAddr);
+        _grantRole(UPGRADER_ROLE, timelockAddr);
         _grantRole(UPGRADER_ROLE, multisig); // Grant upgrade role to multisig
 
         // Set up token and timelock
@@ -355,7 +355,7 @@ contract EcosystemV2 is
      * @custom:throws MaxBurnLimit if the amount exceeds the maximum burn limit
      * @custom:throws BurnSupplyLimit if the amount exceeds available supply
      */
-    function burn(uint256 amount) external nonReentrant whenNotPaused onlyRole(BURNER_ROLE) nonZeroAmount(amount) {
+    function burn(uint256 amount) external nonReentrant whenNotPaused nonZeroAmount(amount) onlyRole(BURNER_ROLE) {
         // Check if the amount exceeds the max burn first (cheaper check)
         if (amount > maxBurn) {
             revert MaxBurnLimit(amount, maxBurn);
