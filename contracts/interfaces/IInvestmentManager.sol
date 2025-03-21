@@ -396,11 +396,8 @@ interface IINVMANAGER {
      * @param token Address of the ecosystem token
      * @param timelock_ Address of the timelock controller
      * @param treasury_ Address of the treasury
-     * @param guardian Address of the guardian (receives PAUSER_ROLE)
-     * @param gnosisSafe Address of the multisig (receives UPGRADER_ROLE)
      */
-    function initialize(address token, address timelock_, address treasury_, address guardian, address gnosisSafe)
-        external;
+    function initialize(address token, address timelock_, address treasury_) external;
 
     /**
      * @dev Pauses the contract
