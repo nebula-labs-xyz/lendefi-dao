@@ -155,7 +155,7 @@ contract InvestmentManagerV2 is
      * @dev Holds information about a pending contract upgrade
      * @notice Implements the timelock upgrade security pattern
      */
-    UpgradeRequest private pendingUpgrade;
+    UpgradeRequest public pendingUpgrade;
 
     /**
      * @dev Reserved storage slots for future upgrades
@@ -213,10 +213,6 @@ contract InvestmentManagerV2 is
      * @param amount The amount to check
      * @custom:throws InvalidAmount if the amount is zero
      */
-    modifier nonZeroAmount(uint256 amount) {
-        if (amount == 0) revert InvalidAmount(amount);
-        _;
-    }
 
     // ============ Constructor & Initializer ============
     /// @custom:oz-upgrades-unsafe-allow constructor
@@ -240,19 +236,11 @@ contract InvestmentManagerV2 is
      * @param token Address of the ecosystem token
      * @param timelock_ Address of the timelock controller
      * @param treasury_ Address of the treasury contract
-     * @param guardian Address with pause/unpause authority
-     * @param gnosisSafe Address of the multisig for management operations
      * @notice Sets up roles, connects to ecosystem contracts, and initializes version
      * @custom:throws ZeroAddressDetected if any parameter is the zero address
      */
-    function initialize(address token, address timelock_, address treasury_, address guardian, address gnosisSafe)
-        external
-        initializer
-    {
-        if (
-            token == address(0) || timelock_ == address(0) || treasury_ == address(0) || guardian == address(0)
-                || gnosisSafe == address(0)
-        ) {
+    function initialize(address token, address timelock_, address treasury_) external initializer {
+        if (token == address(0) || timelock_ == address(0) || treasury_ == address(0)) {
             revert ZeroAddressDetected();
         }
 
@@ -262,10 +250,10 @@ contract InvestmentManagerV2 is
         __ReentrancyGuard_init();
 
         _grantRole(DEFAULT_ADMIN_ROLE, timelock_);
-        _grantRole(MANAGER_ROLE, gnosisSafe);
-        _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(MANAGER_ROLE, timelock_);
+        _grantRole(PAUSER_ROLE, timelock_);
+        _grantRole(UPGRADER_ROLE, timelock_);
         _grantRole(DAO_ROLE, timelock_);
-        _grantRole(UPGRADER_ROLE, gnosisSafe);
 
         ecosystemToken = IERC20(token);
         timelock = timelock_;
@@ -322,6 +310,19 @@ contract InvestmentManagerV2 is
         pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
 
         emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
     }
 
     /**
@@ -856,6 +857,7 @@ contract InvestmentManagerV2 is
      */
     function _updateRoundStatus(uint32 roundId, RoundStatus newStatus) internal {
         Round storage round_ = rounds[roundId];
+        // Failsafe: This condition should never be true due to validation in calling functions
         if (uint8(newStatus) <= uint8(round_.status)) {
             revert InvalidStatusTransition(round_.status, newStatus);
         }
