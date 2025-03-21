@@ -139,19 +139,17 @@ contract TreasuryV2 is
     /**
      * @notice Initializes the treasury contract
      * @dev Sets up the initial state of the contract
-     * @param guardian The address that will have the PAUSER_ROLE
      * @param timelock The address that will have the DEFAULT_ADMIN_ROLE and MANAGER_ROLE
      * @param multisig The address of the Gnosis Safe multisig that will be granted the UPGRADER_ROLE
      * @param startOffset The number of seconds the start time is before the current block timestamp
      * @param vestingDuration The duration of vesting in seconds (must be at least 730 days)
      */
-    function initialize(
-        address guardian,
-        address timelock,
-        address multisig,
-        uint256 startOffset,
-        uint256 vestingDuration
-    ) external initializer nonZeroAddress(guardian) nonZeroAddress(timelock) nonZeroAddress(multisig) {
+    function initialize(address timelock, address multisig, uint256 startOffset, uint256 vestingDuration)
+        external
+        initializer
+        nonZeroAddress(timelock)
+        nonZeroAddress(multisig)
+    {
         if (vestingDuration < 730 days) revert InvalidDuration(730 days);
 
         // Initialize inherited contracts
@@ -163,8 +161,9 @@ contract TreasuryV2 is
         // Set roles
         _grantRole(DEFAULT_ADMIN_ROLE, timelock);
         _grantRole(MANAGER_ROLE, timelock);
-        _grantRole(PAUSER_ROLE, guardian);
-        _grantRole(UPGRADER_ROLE, multisig); // Grant upgrade role to multisig
+        _grantRole(PAUSER_ROLE, timelock);
+        _grantRole(UPGRADER_ROLE, timelock);
+        _grantRole(UPGRADER_ROLE, multisig);
 
         _start = block.timestamp - startOffset;
         _duration = vestingDuration;
@@ -305,6 +304,19 @@ contract TreasuryV2 is
         pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
 
         emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
+    }
+
+    /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
     }
 
     /**
