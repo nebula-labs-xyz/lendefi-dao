@@ -48,9 +48,8 @@ contract TeamManagerBasicTest is BasicDeploy {
         assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal + guardianBal);
 
         // deploy Team Manager using OpenZeppelin Upgrades
-        bytes memory data = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian, gnosisSafe)
-        );
+        bytes memory data =
+            abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), gnosisSafe));
         address payable proxy = payable(Upgrades.deployUUPSProxy("TeamManager.sol", data));
         tmInstance = TeamManager(proxy);
         address implementation = Upgrades.getImplementationAddress(proxy);
@@ -69,7 +68,7 @@ contract TeamManagerBasicTest is BasicDeploy {
     function testInitialization() public {
         // Check role assignments
         assertTrue(tmInstance.hasRole(DEFAULT_ADMIN_ROLE, address(timelockInstance)), "Timelock should have admin role");
-        assertTrue(tmInstance.hasRole(PAUSER_ROLE, guardian), "Guardian should have pauser role");
+        assertTrue(tmInstance.hasRole(PAUSER_ROLE, address(timelockInstance)), "Guardian should have pauser role");
         assertTrue(tmInstance.hasRole(MANAGER_ROLE, address(timelockInstance)), "Timelock should have manager role");
         assertTrue(tmInstance.hasRole(UPGRADER_ROLE, gnosisSafe), "Multisig should have upgrader role");
 
@@ -93,27 +92,17 @@ contract TeamManagerBasicTest is BasicDeploy {
         TeamManager newImpl = new TeamManager();
 
         // Test with zero token address
-        bytes memory data =
-            abi.encodeCall(TeamManager.initialize, (address(0), address(timelockInstance), guardian, gnosisSafe));
+        bytes memory data = abi.encodeCall(TeamManager.initialize, (address(0), address(timelockInstance), gnosisSafe));
         vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with zero timelockInstance address
-        data = abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(0), guardian, gnosisSafe));
+        data = abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(0), gnosisSafe));
         vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with zero guardian address
-        data = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), address(0), gnosisSafe)
-        );
-        vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
-        new ERC1967Proxy(address(newImpl), data);
-
-        // Test with zero multisig address
-        data = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian, address(0))
-        );
+        data = abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), address(0)));
         vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
     }
@@ -121,7 +110,7 @@ contract TeamManagerBasicTest is BasicDeploy {
     function testCannotReinitialize() public {
         // Try to initialize again (with current tmInstance)
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
-        tmInstance.initialize(address(tokenInstance), address(timelockInstance), guardian, gnosisSafe);
+        tmInstance.initialize(address(tokenInstance), address(timelockInstance), gnosisSafe);
     }
 
     // ========== RECEIVE FUNCTION TEST ==========
@@ -140,16 +129,16 @@ contract TeamManagerBasicTest is BasicDeploy {
         assertFalse(tmInstance.paused(), "Contract should not be paused initially");
 
         // Pause as guardian
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectEmit(true, true, true, true);
-        emit Paused(guardian);
+        emit Paused(address(timelockInstance));
         tmInstance.pause();
         assertTrue(tmInstance.paused(), "Contract should be paused");
 
         // Unpause as guardian
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectEmit(true, true, true, true);
-        emit Unpaused(guardian);
+        emit Unpaused(address(timelockInstance));
         tmInstance.unpause();
         assertFalse(tmInstance.paused(), "Contract should be unpaused");
     }
@@ -163,7 +152,7 @@ contract TeamManagerBasicTest is BasicDeploy {
         tmInstance.pause();
 
         // Pause properly
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tmInstance.pause();
 
         // Try to unpause as non-guardian
@@ -182,24 +171,22 @@ contract TeamManagerBasicTest is BasicDeploy {
         }
 
         // Pause the contract
-        vm.prank(guardian);
+        vm.startPrank(address(timelockInstance));
         tmInstance.pause();
 
         // Try to add team member while paused
-        vm.prank(address(timelockInstance));
+
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         tmInstance.addTeamMember(alice, 50_000 ether, 180 days, 730 days);
 
-        // Unpause and retry
-        vm.prank(guardian);
         tmInstance.unpause();
 
-        vm.prank(address(timelockInstance));
         tmInstance.addTeamMember(alice, 50_000 ether, 180 days, 730 days);
 
         // Verify team member was added
         assertEq(tmInstance.allocations(alice), 50_000 ether, "Allocation should be recorded");
         assertNotEq(tmInstance.vestingContracts(alice), address(0), "Vesting contract should be created");
+        vm.stopPrank();
     }
 
     // ========== ROLE MANAGEMENT TESTS ==========
