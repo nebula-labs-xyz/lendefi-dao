@@ -19,7 +19,6 @@ contract GovernanceTokenBasicTest is Test {
     // Test addresses
     address public guardian = address(0x1111);
     address public timelock = address(0x2222);
-    address public multisig = address(0x3333);
     address public ecosystem = address(0x4444);
     address public treasury = address(0x5555);
     address public alice = address(0x6666);
@@ -60,7 +59,7 @@ contract GovernanceTokenBasicTest is Test {
     function setUp() public {
         vm.label(guardian, "Guardian");
         vm.label(timelock, "Timelock");
-        vm.label(multisig, "Multisig");
+        vm.label(timelock, "timelock");
         vm.label(ecosystem, "Ecosystem");
         vm.label(treasury, "Treasury");
         vm.label(alice, "Alice");
@@ -71,7 +70,7 @@ contract GovernanceTokenBasicTest is Test {
         tokenImpl = new GovernanceToken();
 
         // Deploy proxy and initialize
-        bytes memory initData = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, timelock, multisig));
+        bytes memory initData = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, timelock));
         address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", initData));
         tokenInstance = GovernanceToken(proxy);
     }
@@ -94,8 +93,8 @@ contract GovernanceTokenBasicTest is Test {
         // Roles
         assertTrue(tokenInstance.hasRole(DEFAULT_ADMIN_ROLE, timelock));
         assertTrue(tokenInstance.hasRole(TGE_ROLE, guardian));
-        assertTrue(tokenInstance.hasRole(PAUSER_ROLE, guardian));
-        assertTrue(tokenInstance.hasRole(UPGRADER_ROLE, multisig));
+        assertTrue(tokenInstance.hasRole(PAUSER_ROLE, timelock));
+        assertTrue(tokenInstance.hasRole(UPGRADER_ROLE, timelock));
         assertTrue(tokenInstance.hasRole(MANAGER_ROLE, timelock));
 
         // Upgrade state
@@ -109,17 +108,12 @@ contract GovernanceTokenBasicTest is Test {
         GovernanceToken newImpl = new GovernanceToken();
 
         // Zero guardian
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (address(0), timelock, multisig));
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (address(0), timelock));
         vm.expectRevert(GovernanceToken.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Zero timelock
-        data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(0), multisig));
-        vm.expectRevert(GovernanceToken.ZeroAddress.selector);
-        new ERC1967Proxy(address(newImpl), data);
-
-        // Zero multisig
-        data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, timelock, address(0)));
+        data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(0)));
         vm.expectRevert(GovernanceToken.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
     }
@@ -127,7 +121,7 @@ contract GovernanceTokenBasicTest is Test {
     function testCannotReinitialize() public {
         // FIX #1: Use InvalidInitialization selector instead of string error
         vm.expectRevert(Initializable.InvalidInitialization.selector);
-        tokenInstance.initializeUUPS(guardian, timelock, multisig);
+        tokenInstance.initializeUUPS(guardian, timelock);
     }
 
     function testRevert_Receive() public returns (bool success) {
@@ -204,16 +198,16 @@ contract GovernanceTokenBasicTest is Test {
         assertFalse(tokenInstance.paused());
 
         // Pause
-        vm.prank(guardian);
+        vm.prank(timelock);
         vm.expectEmit(true, false, false, false);
-        emit Paused(guardian);
+        emit Paused(timelock);
         tokenInstance.pause();
         assertTrue(tokenInstance.paused());
 
         // Unpause
-        vm.prank(guardian);
+        vm.prank(timelock);
         vm.expectEmit(true, false, false, false);
-        emit Unpaused(guardian);
+        emit Unpaused(timelock);
         tokenInstance.unpause();
         assertFalse(tokenInstance.paused());
     }
@@ -228,7 +222,7 @@ contract GovernanceTokenBasicTest is Test {
 
     function testRevert_UnauthorizedUnpause() public {
         // First pause
-        vm.prank(guardian);
+        vm.prank(timelock);
         tokenInstance.pause();
 
         // Try unauthorized unpause
@@ -357,7 +351,7 @@ contract GovernanceTokenBasicTest is Test {
         tokenInstance.setBridgeAddress(bridge);
 
         // Pause contract
-        vm.prank(guardian);
+        vm.prank(address(timelock));
         tokenInstance.pause();
 
         // FIX #4: Use PausableUpgradeable.EnforcedPause.selector instead of string
@@ -405,10 +399,10 @@ contract GovernanceTokenBasicTest is Test {
     function testScheduleUpgrade() public {
         address newImpl = address(0x9999);
 
-        vm.prank(multisig);
+        vm.prank(timelock);
         vm.expectEmit(true, true, true, true);
         emit UpgradeScheduled(
-            multisig, newImpl, uint64(block.timestamp), uint64(block.timestamp + UPGRADE_TIMELOCK_DURATION)
+            timelock, newImpl, uint64(block.timestamp), uint64(block.timestamp + UPGRADE_TIMELOCK_DURATION)
         );
         tokenInstance.scheduleUpgrade(newImpl);
 
@@ -419,7 +413,7 @@ contract GovernanceTokenBasicTest is Test {
     }
 
     function testRevert_ScheduleUpgradeZeroAddress() public {
-        vm.prank(multisig);
+        vm.prank(timelock);
         vm.expectRevert(GovernanceToken.ZeroAddress.selector);
         tokenInstance.scheduleUpgrade(address(0));
     }
@@ -438,7 +432,7 @@ contract GovernanceTokenBasicTest is Test {
 
         // Schedule upgrade
         address newImpl = address(0x9999);
-        vm.prank(multisig);
+        vm.prank(timelock);
         tokenInstance.scheduleUpgrade(newImpl);
 
         // Check remaining time right after scheduling
@@ -457,12 +451,12 @@ contract GovernanceTokenBasicTest is Test {
         address newImpl = address(0x9999);
 
         // Schedule upgrade
-        vm.prank(multisig);
+        vm.prank(timelock);
         tokenInstance.scheduleUpgrade(newImpl);
 
         // Try to upgrade immediately - FIX #6: Use correct error selector
         uint256 remaining = tokenInstance.upgradeTimelockRemaining();
-        vm.prank(multisig);
+        vm.prank(timelock);
         vm.expectRevert(abi.encodeWithSelector(GovernanceToken.UpgradeTimelockActive.selector, remaining));
         tokenInstance.upgradeToAndCall(newImpl, "");
     }
@@ -471,7 +465,7 @@ contract GovernanceTokenBasicTest is Test {
         address newImpl = address(0x9999);
 
         // Try to upgrade without scheduling
-        vm.prank(multisig);
+        vm.prank(timelock);
         vm.expectRevert(GovernanceToken.UpgradeNotScheduled.selector);
         tokenInstance.upgradeToAndCall(newImpl, "");
     }
@@ -481,14 +475,14 @@ contract GovernanceTokenBasicTest is Test {
         address differentImpl = address(0xAAAA);
 
         // Schedule upgrade
-        vm.prank(multisig);
+        vm.prank(timelock);
         tokenInstance.scheduleUpgrade(scheduledImpl);
 
         // Warp past timelock
         vm.warp(block.timestamp + UPGRADE_TIMELOCK_DURATION + 1);
 
         // Try to upgrade with different implementation
-        vm.prank(multisig);
+        vm.prank(timelock);
         vm.expectRevert(
             abi.encodeWithSelector(GovernanceToken.ImplementationMismatch.selector, scheduledImpl, differentImpl)
         );
@@ -499,7 +493,7 @@ contract GovernanceTokenBasicTest is Test {
         address newImpl = address(0x9999);
 
         // Schedule upgrade
-        vm.prank(multisig);
+        vm.prank(timelock);
         tokenInstance.scheduleUpgrade(newImpl);
 
         // Warp past timelock
@@ -616,7 +610,7 @@ contract GovernanceTokenBasicTest is Test {
         tokenInstance.transfer(alice, 1000 ether);
 
         // Pause the contract
-        vm.prank(guardian);
+        vm.prank(address(timelock));
         tokenInstance.pause();
 
         // Try to transfer while paused
@@ -632,11 +626,11 @@ contract GovernanceTokenBasicTest is Test {
         address impl2 = address(0xAAAA);
 
         // Schedule first upgrade
-        vm.prank(multisig);
+        vm.prank(timelock);
         tokenInstance.scheduleUpgrade(impl1);
 
         // Schedule second upgrade (should override first one)
-        vm.prank(multisig);
+        vm.prank(timelock);
         tokenInstance.scheduleUpgrade(impl2);
 
         // Check that second implementation is stored
