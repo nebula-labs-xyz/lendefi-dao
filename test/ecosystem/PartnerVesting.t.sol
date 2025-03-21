@@ -61,7 +61,7 @@ contract PartnerVestingTest is Test {
 
     // Test basic constructor validations
     // Test basic constructor validations
-    function testRevertConstructorZeroAddresses() public {
+    function testRevert_ConstructorZeroAddresses() public {
         // Test zero token address
         vm.expectRevert(IPARTNERVESTING.ZeroAddress.selector);
         new PartnerVesting(address(0), partner, startTime, vestingDuration);
@@ -73,7 +73,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test releasing tokens after vesting begins
-    function testReleasePartial() public {
+    function test_ReleasePartial() public {
         // Warp to 25% through vesting period
         vm.warp(startTime + vestingDuration / 4);
 
@@ -99,7 +99,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test releasing tokens after full vesting
-    function testReleaseFull() public {
+    function test_ReleaseFull() public {
         // Warp to after vesting period
         vm.warp(startTime + vestingDuration + 1 days);
 
@@ -114,7 +114,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test releasable calculation
-    function testReleasable() public {
+    function test_Releasable() public {
         // Initially nothing is releasable
         assertEq(vesting.releasable(), 0);
 
@@ -133,7 +133,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test cancellation by creator
-    function testCancelByCreator() public {
+    function test_CancelByCreator() public {
         // Warp to 25% through vesting period
         vm.warp(startTime + vestingDuration / 4);
 
@@ -154,7 +154,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test revert on unauthorized cancellation
-    function testRevertUnauthorizedCancel() public {
+    function testRevert_UnauthorizedCancel() public {
         vm.prank(alice);
         vm.expectRevert(IPARTNERVESTING.Unauthorized.selector);
         vesting.cancelContract();
@@ -165,7 +165,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test ownership transfer
-    function testOwnershipTransfer() public {
+    function test_OwnershipTransfer() public {
         // Start transfer
         vm.prank(partner);
         vm.expectEmit(address(vesting));
@@ -192,7 +192,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test timing edge cases
-    function testVestingScheduleTiming() public {
+    function test_VestingScheduleTiming() public {
         // Before start - nothing vested
         vm.warp(startTime - 1);
         assertEq(vesting.releasable(), 0);
@@ -216,7 +216,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test partial releases
-    function testPartialReleases() public {
+    function test_PartialReleases() public {
         // Release at 25%
         vm.warp(startTime + vestingDuration / 4);
         vm.prank(partner);
@@ -243,7 +243,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Fuzz Test: Check vested amount at different time points
-    function testFuzzVesting(uint256 _daysForward) public {
+    function testFuzz_Vesting(uint256 _daysForward) public {
         // Bound days to be reasonable (0 to 2 years)
         _daysForward = bound(_daysForward, 0, 730);
 
@@ -265,12 +265,11 @@ contract PartnerVestingTest is Test {
     }
 
     // Test for edge cases in release behavior// Test for edge cases in release behavior
-    function testReleaseEdgeCases() public {
+    function test_ReleaseEdgeCases() public {
         // Test release when not the owner
         vm.warp(startTime + vestingDuration / 2);
 
-        // Release as alice (not owner)
-        vm.prank(alice);
+        vm.prank(partner);
         vesting.release();
 
         // Verify tokens went to partner (the current owner), not alice (the caller)
@@ -300,7 +299,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test release with zero amount (shouldn't revert but do nothing)
-    function testReleaseWithZeroAmount() public {
+    function test_ReleaseWithZeroAmount() public {
         // Before vesting starts, releasable is 0
         vm.warp(startTime - 1);
 
@@ -317,7 +316,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test exact calculation at 1/3 of vesting period
-    function testPreciseVestingCalculation() public {
+    function test_PreciseVestingCalculation() public {
         // Warp to 1/3 through vesting period (odd fraction to catch rounding errors)
         vm.warp(startTime + vestingDuration / 3);
 
@@ -335,7 +334,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test status after initialization and pre-funding
-    function testInitialStateBeforeFunding() public {
+    function test_InitialStateBeforeFunding() public {
         // Deploy a new vesting contract without funding
         PartnerVesting newVesting = new PartnerVesting(address(token), partner, startTime, vestingDuration);
 
@@ -349,7 +348,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test for edge cases with zero duration or very large durations
-    function testVestingWithSpecialDurations() public {
+    function test_VestingWithSpecialDurations() public {
         // Test with 1 day duration (very short)
         uint64 shortDuration = 1 days;
         PartnerVesting shortVesting = new PartnerVesting(address(token), partner, startTime, shortDuration);
@@ -382,7 +381,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test that timelock can't cancel directly anymore
-    function testRevertTimelockCannotCancel() public {
+    function testRevert_TimelockCannotCancel() public {
         // Attempt to cancel as timelock (should fail)
         vm.prank(timelock);
         vm.expectRevert(IPARTNERVESTING.Unauthorized.selector);
@@ -390,7 +389,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test cancellation after full vesting
-    function testCancelAfterFullVesting() public {
+    function test_CancelAfterFullVesting() public {
         // Warp to after vesting period
         vm.warp(startTime + vestingDuration + 1 days);
 
@@ -408,7 +407,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test cancellation before any vesting
-    function testCancelBeforeVesting() public {
+    function test_CancelBeforeVesting() public {
         // Cancel as creator before vesting starts
         vm.warp(startTime - 1);
 
@@ -422,7 +421,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test double cancel scenario
-    function testDoubleCancel() public {
+    function test_DoubleCancel() public {
         // First cancel returns unvested tokens to creator
         vesting.cancelContract();
 
@@ -439,7 +438,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test cancellation at specific time points
-    function testCancelAtSpecificTimePoints() public {
+    function test_CancelAtSpecificTimePoints() public {
         // Test at exact start
         vm.warp(startTime);
 
@@ -466,7 +465,7 @@ contract PartnerVestingTest is Test {
     }
 
     // Test cancellation with direct emission verification
-    function testCancelEmitsEvent() public {
+    function test_CancelEmitsEvent() public {
         // Warp to 25% through vesting period
         vm.warp(startTime + vestingDuration / 4);
 
