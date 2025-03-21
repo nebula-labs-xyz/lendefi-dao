@@ -219,10 +219,9 @@ interface IECOSYSTEM {
      * @dev Sets up the initial state of the contract, including roles and token supplies
      * @param token Address of the governance token
      * @param timelockAddr Address of the timelock controller for partner vesting cancellation
-     * @param guardian Address of the guardian (receives PAUSER_ROLE)
      * @param multisig Address of the multisig (receives UPGRADER_ROLE)
      */
-    function initialize(address token, address timelockAddr, address guardian, address multisig) external;
+    function initialize(address token, address timelockAddr, address multisig) external;
 
     /**
      * @notice Pauses all contract operations
