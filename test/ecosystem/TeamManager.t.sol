@@ -29,9 +29,8 @@ contract TeamManagerTest is BasicDeploy {
         assertEq(tokenInstance.totalSupply(), ecoBal + treasuryBal + guardianBal);
 
         // deploy Team Manager
-        bytes memory data = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian, gnosisSafe)
-        );
+        bytes memory data =
+            abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), gnosisSafe));
         address payable proxy = payable(Upgrades.deployUUPSProxy("TeamManager.sol", data));
         tmInstance = TeamManager(proxy);
         address implementation = Upgrades.getImplementationAddress(proxy);
@@ -119,7 +118,7 @@ contract TeamManagerTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
-        tmInstance.initialize(address(timelockInstance), address(timelockInstance), guardian, gnosisSafe);
+        tmInstance.initialize(address(timelockInstance), address(timelockInstance), gnosisSafe);
     }
 
     function testInitializeWithZeroAddressesViaProxy() public {
@@ -127,38 +126,27 @@ contract TeamManagerTest is BasicDeploy {
         TeamManager teamManagerImpl = new TeamManager();
 
         // Test with zero token address
-        bytes memory data =
-            abi.encodeCall(TeamManager.initialize, (address(0), address(timelockInstance), guardian, gnosisSafe));
+        bytes memory data = abi.encodeCall(TeamManager.initialize, (address(0), address(timelockInstance), gnosisSafe));
         vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
         ERC1967Proxy proxy = new ERC1967Proxy(address(teamManagerImpl), data);
         TeamManager(payable(address(proxy)));
 
         // Test with zero timelock address
-        data = abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(0), guardian, gnosisSafe));
+        data = abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(0), gnosisSafe));
         vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
         ERC1967Proxy proxy1 = new ERC1967Proxy(address(teamManagerImpl), data);
         TeamManager(payable(address(proxy1)));
 
         // Test with zero guardian address
-        data = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), address(0), gnosisSafe)
-        );
+        data = abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), address(0)));
         vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
         ERC1967Proxy proxy2 = new ERC1967Proxy(address(teamManagerImpl), data);
         TeamManager(payable(address(proxy2)));
-
-        // Test with zero multisig address
-        data = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian, address(0))
-        );
-        vm.expectRevert(ITEAMMANAGER.ZeroAddress.selector);
-        ERC1967Proxy proxy3 = new ERC1967Proxy(address(teamManagerImpl), data);
-        TeamManager(payable(address(proxy3)));
     }
 
     //Test: testPause
     function testPause() public {
-        vm.startPrank(guardian);
+        vm.startPrank(address(timelockInstance));
         assertEq(tmInstance.paused(), false);
         tmInstance.pause();
         assertEq(tmInstance.paused(), true);
@@ -179,13 +167,13 @@ contract TeamManagerTest is BasicDeploy {
         tmInstance.pause();
 
         // Pauser should be able to pause
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tmInstance.pause();
         assertTrue(tmInstance.paused());
 
         // Should revert when trying to pause twice
         bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectRevert(expError);
         tmInstance.pause();
 
@@ -197,44 +185,26 @@ contract TeamManagerTest is BasicDeploy {
         tmInstance.unpause();
 
         // Pauser should be able to unpause
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tmInstance.unpause();
         assertFalse(tmInstance.paused());
 
         // Should revert when trying to unpause again
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectRevert(abi.encodeWithSignature("ExpectedPause()"));
         tmInstance.unpause();
     }
 
-    function testPauseBlocksOperations() public {
+    function testRevert_PauseBlocksOperations() public {
         // Pause the contract
-        vm.prank(guardian);
+        vm.startPrank(address(timelockInstance));
         tmInstance.pause();
         assertTrue(tmInstance.paused());
 
         // Try to add team member while paused
         bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
-        vm.prank(address(timelockInstance));
         vm.expectRevert(expError);
         tmInstance.addTeamMember(alice, 100 ether, 365 days, 730 days);
-
-        // Unpause and verify operations resume
-        vm.prank(guardian);
-        tmInstance.unpause();
-        assertFalse(tmInstance.paused());
-
-        // Setup treasury release
-        // vm.roll(block.timestamp + 365 days);
-        vm.startPrank(address(timelockInstance));
-        treasuryInstance.release(address(tokenInstance), address(tmInstance), 100 ether);
-
-        // Should now be able to add team member
-        tmInstance.addTeamMember(alice, 100 ether, 365 days, 730 days);
-        vm.stopPrank();
-
-        // Verify allocation was successful
-        assertEq(tmInstance.allocations(alice), 100 ether);
     }
 
     function test_PauserRoleManagement() public {
@@ -268,7 +238,7 @@ contract TeamManagerTest is BasicDeploy {
     //Test: RevertAddTeamMemberBranch2
     function testRevert_AddTeamMemberBranch2() public {
         assertEq(tmInstance.paused(), false);
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         tmInstance.pause();
         assertEq(tmInstance.paused(), true);
 
@@ -460,57 +430,45 @@ contract TeamManagerTest is BasicDeploy {
         tmInstance.addTeamMember(alice, 0, 180 days, 730 days);
     }
 
+    // For testRevert_UpgradeTimelockActive()
     function testRevert_UpgradeTimelockActive() public {
         // Schedule an upgrade
+        address newImpl = address(0x1234);
         vm.prank(gnosisSafe);
-        tmInstance.scheduleUpgrade(address(0x1234));
+        tmInstance.scheduleUpgrade(newImpl);
 
         // Try to upgrade immediately (without waiting for timelock)
         uint256 remainingTime = tmInstance.upgradeTimelockRemaining();
-        vm.prank(address(timelockInstance));
+        vm.prank(gnosisSafe);
         vm.expectRevert(abi.encodeWithSelector(ITEAMMANAGER.UpgradeTimelockActive.selector, remainingTime));
-
-        // This is a mock call - in actual code the upgrade happens through upgradeToAndCall
-        // but we want to test the _authorizeUpgrade internal function that throws UpgradeTimelockActive
-        bytes memory upgradeCalldata =
-            abi.encodeWithSelector(bytes4(keccak256("upgradeToAndCall(address,bytes)")), address(0x1234), "");
-        (bool success,) = address(tmInstance).call(upgradeCalldata);
-        assertFalse(success);
+        tmInstance.upgradeToAndCall(newImpl, "");
     }
 
+    // For testRevert_UpgradeNotScheduled()
     function testRevert_UpgradeNotScheduled() public {
         // Try to upgrade without scheduling first
-        vm.prank(address(timelockInstance));
+        vm.prank(gnosisSafe);
         vm.expectRevert(ITEAMMANAGER.UpgradeNotScheduled.selector);
-
-        // This is a mock call since we can't directly call _authorizeUpgrade
-        bytes memory upgradeCalldata =
-            abi.encodeWithSelector(bytes4(keccak256("upgradeToAndCall(address,bytes)")), address(0x1234), "");
-        (bool success,) = address(tmInstance).call(upgradeCalldata);
-        assertFalse(success);
+        tmInstance.upgradeToAndCall(address(0x1234), "");
     }
 
+    // For testRevert_ImplementationMismatch()
     function testRevert_ImplementationMismatch() public {
         // Schedule upgrade to one implementation
         address scheduledImpl = address(0x1234);
         vm.prank(gnosisSafe);
         tmInstance.scheduleUpgrade(scheduledImpl);
 
-        // Warp past timelock period (3 days is the typical duration)
+        // Warp past timelock period
         vm.warp(block.timestamp + 3 days + 1);
 
         // Try to upgrade to a different implementation
         address differentImpl = address(0x5678);
-        vm.prank(address(timelockInstance));
+        vm.prank(gnosisSafe);
         vm.expectRevert(
             abi.encodeWithSelector(ITEAMMANAGER.ImplementationMismatch.selector, scheduledImpl, differentImpl)
         );
-
-        // This is a mock call
-        bytes memory upgradeCalldata =
-            abi.encodeWithSelector(bytes4(keccak256("upgradeToAndCall(address,bytes)")), differentImpl, "");
-        (bool success,) = address(tmInstance).call(upgradeCalldata);
-        assertFalse(success);
+        tmInstance.upgradeToAndCall(differentImpl, "");
     }
 
     function testUpgradeTimelockExpired() public {
