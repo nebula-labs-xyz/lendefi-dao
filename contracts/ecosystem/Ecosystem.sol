@@ -120,16 +120,26 @@ contract Ecosystem is
     }
 
     /**
-     * @dev Initializes the ecosystem contract.
-     * @notice Sets up the initial state of the contract, including roles and token supplies.
-     * @param token The address of the governance token.
-     * @param timelockAddr The address of the timelock controller for partner vesting cancellation.
-     * @param multisig The address of the pauser.
-     * @custom:requires All input addresses must not be zero.
-     * @custom:requires-role DEFAULT_ADMIN_ROLE for the guardian.
-     * @custom:requires-role PAUSER_ROLE for the pauser.
-     * @custom:events-emits {Initialized} event.
-     * @custom:throws ZeroAddressDetected if any of the input addresses are zero.
+     * @notice Initializes the Ecosystem contract with core dependencies and configurations
+     * @dev Sets up the contract with initial token allocations, roles, and limits
+     * @param token Address of the LENDEFI token contract
+     * @param timelockAddr Address of the timelock contract that will have admin control
+     * @param multisig Address of the multisig wallet that will have upgrade rights
+     * @custom:security Uses initializer modifier to prevent multiple initializations
+     * @custom:security-roles Grants the following roles:
+     *  - DEFAULT_ADMIN_ROLE to timelock
+     *  - MANAGER_ROLE to timelock
+     *  - PAUSER_ROLE to timelock
+     *  - UPGRADER_ROLE to both timelock and multisig
+     * @custom:allocation Configures token allocations as follows:
+     *  - 26% for rewards
+     *  - 10% for airdrops
+     *  - 8% for partnerships
+     * @custom:limits Sets initial limits:
+     *  - maxReward: 0.1% of reward supply
+     *  - maxBurn: 2% of reward supply
+     * @custom:events-emits {Initialized} when initialization is complete
+     * @custom:throws ZeroAddressDetected if any input address is zero
      */
     function initialize(address token, address timelockAddr, address multisig) external initializer {
         if (token == address(0) || timelockAddr == address(0) || multisig == address(0)) {
