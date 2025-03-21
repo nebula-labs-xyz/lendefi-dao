@@ -99,7 +99,7 @@ contract TimelockTest is BasicDeploy {
     }
 
     function test_DeployGovernor() public {
-        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelock), gnosisSafe));
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelock)));
         address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
         tokenInstance = GovernanceToken(proxy);
         address tokenImplementation = Upgrades.getImplementationAddress(proxy);
