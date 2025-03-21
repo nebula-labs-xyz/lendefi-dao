@@ -834,8 +834,7 @@ contract LendefiGovernorTest is BasicDeploy {
     }
 
     function deployToken() internal {
-        bytes memory data =
-            abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance), gnosisSafe));
+        bytes memory data = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance)));
         address payable proxy = payable(Upgrades.deployUUPSProxy("GovernanceToken.sol", data));
         tokenInstance = GovernanceToken(proxy);
         address tokenImplementation = Upgrades.getImplementationAddress(proxy);
@@ -844,7 +843,7 @@ contract LendefiGovernorTest is BasicDeploy {
 
     function deployEcosystem() internal {
         bytes memory data =
-            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, pauser));
+            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), pauser));
         address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", data));
         ecoInstance = Ecosystem(proxy);
         address ecoImplementation = Upgrades.getImplementationAddress(proxy);
@@ -875,7 +874,7 @@ contract LendefiGovernorTest is BasicDeploy {
 
     function deployTreasury() internal {
         bytes memory data =
-            abi.encodeCall(Treasury.initialize, (guardian, address(timelockInstance), gnosisSafe, 180 days, 1095 days));
+            abi.encodeCall(Treasury.initialize, (address(timelockInstance), gnosisSafe, 180 days, 1095 days));
         address payable proxy = payable(Upgrades.deployUUPSProxy("Treasury.sol", data));
         treasuryInstance = Treasury(proxy);
         address tImplementation = Upgrades.getImplementationAddress(proxy);
