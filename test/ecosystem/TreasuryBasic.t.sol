@@ -38,7 +38,6 @@ contract TreasuryBasicTest is Test {
     address constant ethereum = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     // Test accounts
-    address guardian = address(0x1111);
     address timelock = address(0x2222);
     address multisig = address(0x3333);
     address recipient = address(0x4444);
@@ -62,8 +61,7 @@ contract TreasuryBasicTest is Test {
         treasuryImpl = new Treasury();
 
         // Deploy proxy with implementation
-        bytes memory initData =
-            abi.encodeCall(Treasury.initialize, (guardian, timelock, multisig, startOffset, vestingDuration));
+        bytes memory initData = abi.encodeCall(Treasury.initialize, (timelock, multisig, startOffset, vestingDuration));
 
         ERC1967Proxy proxy = new ERC1967Proxy(address(treasuryImpl), initData);
         treasuryProxy = Treasury(payable(address(proxy)));
@@ -79,7 +77,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test initialization parameters
-    function testInitialization() public {
+    function test_Initialization() public {
         assertEq(treasuryProxy.start(), block.timestamp, "Start timestamp incorrect");
         assertEq(treasuryProxy.duration(), vestingDuration, "Duration incorrect");
         assertEq(treasuryProxy.end(), block.timestamp + vestingDuration, "End timestamp incorrect");
@@ -87,54 +85,48 @@ contract TreasuryBasicTest is Test {
         assertEq(treasuryProxy.released(address(tokenProxy)), 0, "Initial token released amount should be 0");
         assertTrue(treasuryProxy.hasRole(DEFAULT_ADMIN_ROLE, timelock), "Timelock should have DEFAULT_ADMIN_ROLE");
         assertTrue(treasuryProxy.hasRole(MANAGER_ROLE, timelock), "Timelock should have MANAGER_ROLE");
-        assertTrue(treasuryProxy.hasRole(PAUSER_ROLE, guardian), "Guardian should have PAUSER_ROLE");
+        assertTrue(treasuryProxy.hasRole(PAUSER_ROLE, timelock), "Guardian should have PAUSER_ROLE");
         assertTrue(treasuryProxy.hasRole(UPGRADER_ROLE, multisig), "Multisig should have UPGRADER_ROLE");
         assertEq(treasuryProxy.version(), 1, "Initial version should be 1");
         assertEq(treasuryProxy.timelockAddress(), timelock, "Timelock address incorrect");
     }
 
     // Test initialization reverts with zero addresses
-    function testInitializeRevertsWithZeroAddresses() public {
+    function test_Revert_InitializeRevertsWithZeroAddresses() public {
         Treasury newImpl = new Treasury();
 
-        // Test with zero guardian
-        bytes memory data =
-            abi.encodeCall(Treasury.initialize, (address(0), timelock, multisig, startOffset, vestingDuration));
-        vm.expectRevert(ITREASURY.ZeroAddress.selector);
-        new ERC1967Proxy(address(newImpl), data);
-
         // Test with zero timelock
-        data = abi.encodeCall(Treasury.initialize, (guardian, address(0), multisig, startOffset, vestingDuration));
+        bytes memory data = abi.encodeCall(Treasury.initialize, (address(0), multisig, startOffset, vestingDuration));
         vm.expectRevert(ITREASURY.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with zero multisig
-        data = abi.encodeCall(Treasury.initialize, (guardian, timelock, address(0), startOffset, vestingDuration));
+        data = abi.encodeCall(Treasury.initialize, (timelock, address(0), startOffset, vestingDuration));
         vm.expectRevert(ITREASURY.ZeroAddress.selector);
         new ERC1967Proxy(address(newImpl), data);
 
         // Test with invalid duration
-        data = abi.encodeCall(Treasury.initialize, (guardian, timelock, multisig, startOffset, 729 days));
+        data = abi.encodeCall(Treasury.initialize, (timelock, multisig, startOffset, 729 days));
         vm.expectRevert(abi.encodeWithSelector(ITREASURY.InvalidDuration.selector, 730 days));
         new ERC1967Proxy(address(newImpl), data);
     }
 
     // Test pause and unpause
-    function testPauseUnpause() public {
+    function test_PauseUnpause() public {
         // Initial state should be unpaused
         assertFalse(treasuryProxy.paused(), "Treasury should start unpaused");
 
         // Guardian should be able to pause
-        vm.prank(guardian);
+        vm.prank(timelock);
         vm.expectEmit(true, true, true, true);
-        emit Paused(guardian);
+        emit Paused(timelock);
         treasuryProxy.pause();
         assertTrue(treasuryProxy.paused(), "Treasury should be paused");
 
         // Guardian should be able to unpause
-        vm.prank(guardian);
+        vm.prank(timelock);
         vm.expectEmit(true, true, true, true);
-        emit Unpaused(guardian);
+        emit Unpaused(timelock);
         treasuryProxy.unpause();
         assertFalse(treasuryProxy.paused(), "Treasury should be unpaused");
 
@@ -149,7 +141,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test releasing ETH
-    function testReleaseEth() public {
+    function test_ReleaseEth() public {
         // Warp to 25% through vesting period
         vm.warp(startTimestamp + vestingDuration / 4);
 
@@ -185,29 +177,26 @@ contract TreasuryBasicTest is Test {
         treasuryProxy.release(recipient, 1 ether);
 
         // Test release when paused
-        vm.prank(guardian);
+        vm.startPrank(timelock);
         treasuryProxy.pause();
 
-        vm.prank(timelock);
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
         treasuryProxy.release(recipient, 1 ether);
 
         // Unpause and continue testing
-        vm.prank(guardian);
         treasuryProxy.unpause();
 
         // Test with invalid parameters
-        vm.prank(timelock);
         vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryProxy.release(address(0), 1 ether);
 
-        vm.prank(timelock);
         vm.expectRevert(ITREASURY.ZeroAmount.selector);
         treasuryProxy.release(recipient, 0);
+        vm.stopPrank();
     }
 
     // Test releasing ERC20 tokens
-    function testReleaseTokens() public {
+    function test_ReleaseTokens() public {
         // Warp to 25% through vesting period
         vm.warp(startTimestamp + vestingDuration / 4);
 
@@ -246,7 +235,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test vesting schedule calculation
-    function testVestedAmountCalculation() public {
+    function test_VestedAmountCalculation() public {
         // Before start - should be 0
         vm.warp(startTimestamp - 1);
         assertEq(treasuryProxy.vestedAmount(block.timestamp), 0, "Nothing should be vested before start");
@@ -283,7 +272,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test updating vesting schedule
-    function testUpdateVestingSchedule() public {
+    function test_UpdateVestingSchedule() public {
         uint256 newStart = startTimestamp + 30 days;
         uint256 newDuration = 2 * 365 days;
 
@@ -320,7 +309,7 @@ contract TreasuryBasicTest is Test {
         );
     }
 
-    function testEmergencyWithdrawETH() public {
+    function test_EmergencyWithdrawETH() public {
         uint256 initialBalance = timelock.balance;
 
         vm.prank(timelock);
@@ -351,7 +340,7 @@ contract TreasuryBasicTest is Test {
         treasuryProxy.emergencyWithdrawEther();
     }
 
-    function testRevert_EmergencyWithdrawTokens() public {
+    function test_Revert_EmergencyWithdrawTokens() public {
         uint256 initialBalance = tokenProxy.balanceOf(timelock);
         uint256 treasuryBalance = tokenProxy.balanceOf(address(treasuryProxy));
 
@@ -378,7 +367,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test receive function
-    function testReceiveFunction() public {
+    function test_ReceiveFunction() public {
         uint256 initialBalance = address(treasuryProxy).balance;
 
         // Send ETH directly to the contract
@@ -391,11 +380,10 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test upgrade scheduling and execution
-    function testScheduleAndExecuteUpgrade() public {
+    function test_ScheduleAndExecuteUpgrade() public {
         vm.warp(365 days);
 
-        bytes memory data =
-            abi.encodeCall(Treasury.initialize, (guardian, timelock, multisig, startOffset, vestingDuration));
+        bytes memory data = abi.encodeCall(Treasury.initialize, (timelock, multisig, startOffset, vestingDuration));
         address payable proxy = payable(Upgrades.deployUUPSProxy("Treasury.sol", data));
         treasuryProxy = Treasury(proxy);
         address implAddressV1 = Upgrades.getImplementationAddress(proxy);
@@ -443,7 +431,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test upgrade scheduling failures
-    function testScheduleUpgradeFailures() public {
+    function test_ScheduleUpgradeFailures() public {
         // Non-upgrader should not be able to schedule
         vm.prank(alice);
         vm.expectRevert(
@@ -466,7 +454,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test fuzz: releasable amount at different timestamps
-    function testFuzzReleasableAmount(uint256 timeElapsed) public {
+    function test_FuzzReleasableAmount(uint256 timeElapsed) public {
         // Bound time to reasonable range (0 to 10 years)
         timeElapsed = bound(timeElapsed, 0, 3650 days);
 
@@ -495,7 +483,7 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test precise vesting calculation at 1/3 of vesting period
-    function testPreciseVestingCalculation() public {
+    function test_PreciseVestingCalculation() public {
         // Warp to 1/3 through vesting period
         vm.warp(startTimestamp + vestingDuration / 3);
 
@@ -513,12 +501,12 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test upgradeTimelockRemaining with no upgrade scheduled
-    function testUpgradeTimelockRemainingNoUpgrade() public {
+    function test_UpgradeTimelockRemainingNoUpgrade() public {
         assertEq(treasuryProxy.upgradeTimelockRemaining(), 0, "Should be 0 with no scheduled upgrade");
     }
 
     // Test upgradeToAndCall without timelock
-    function testUpgradeToAndCallRevertOnNoUpgrade() public {
+    function test_UpgradeToAndCallRevertOnNoUpgrade() public {
         Treasury newImpl = new Treasury();
         vm.prank(multisig);
         vm.expectRevert(ITREASURY.UpgradeNotScheduled.selector);
@@ -526,18 +514,18 @@ contract TreasuryBasicTest is Test {
     }
 
     // Test: RevertInitializeTwice
-    function testRevert_CantInitializeTwice() public {
+    function test_Revert_CantInitializeTwice() public {
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
-        treasuryProxy.initialize(guardian, timelock, multisig, startOffset, vestingDuration);
+        treasuryProxy.initialize(timelock, multisig, startOffset, vestingDuration);
     }
 
-    function testRevert_EmergencyWithdrawWithZeroToken() public {
+    function test_Revert_EmergencyWithdrawWithZeroToken() public {
         vm.prank(timelock);
         vm.expectRevert(ITREASURY.ZeroAddress.selector);
         treasuryProxy.emergencyWithdrawToken(address(0));
     }
 
-    function testRevert_EmergencyWithdrawTokenZeroBalance() public {
+    function test_Revert_EmergencyWithdrawTokenZeroBalance() public {
         // Deploy a new token that the treasury doesn't have any balance of
         TokenMock emptyToken = new TokenMock("Empty Token", "EMPTY");
 
@@ -546,15 +534,14 @@ contract TreasuryBasicTest is Test {
         treasuryProxy.emergencyWithdrawToken(address(emptyToken));
     }
 
-    function testEmergencyWithdrawWhenPaused() public {
+    function test_EmergencyWithdrawWhenPaused() public {
         // Pause the contract
-        vm.prank(guardian);
+        vm.startPrank(timelock);
         treasuryProxy.pause();
 
         // Emergency withdraw should still work when paused
         uint256 balance = address(treasuryProxy).balance;
 
-        vm.prank(timelock);
         treasuryProxy.emergencyWithdrawEther();
 
         assertEq(address(treasuryProxy).balance, 0, "Treasury should have no ETH left");
@@ -563,16 +550,15 @@ contract TreasuryBasicTest is Test {
         // Token withdrawal should also work when paused
         tokenProxy.mint(timelock, 1000e18); // Add this line to mint tokens to timelock
 
-        vm.prank(timelock);
         tokenProxy.transfer(address(treasuryProxy), 1000e18);
 
-        vm.prank(timelock);
         treasuryProxy.emergencyWithdrawToken(address(tokenProxy));
 
         assertEq(tokenProxy.balanceOf(address(treasuryProxy)), 0, "Treasury should have no tokens left");
+        vm.stopPrank();
     }
 
-    function testMultipleEmergencyWithdrawals() public {
+    function test_MultipleEmergencyWithdrawals() public {
         // First withdraw all ETH
         vm.prank(timelock);
         treasuryProxy.emergencyWithdrawEther();
@@ -603,7 +589,7 @@ contract TreasuryBasicTest is Test {
         assertEq(tokenProxy.balanceOf(address(treasuryProxy)), 0, "Treasury should have no tokens left");
     }
 
-    function testVestingAtExactStartTime() public {
+    function test_VestingAtExactStartTime() public {
         // Warp to exact start time
         vm.warp(startTimestamp);
 
@@ -625,7 +611,7 @@ contract TreasuryBasicTest is Test {
         );
     }
 
-    function testUpgradeTimelockExpired() public {
+    function test_UpgradeTimelockExpired() public {
         // Deploy a new implementation
         Treasury newImpl = new Treasury();
 
@@ -643,7 +629,7 @@ contract TreasuryBasicTest is Test {
         assertEq(treasuryProxy.upgradeTimelockRemaining(), 0, "Timelock should have expired");
     }
 
-    function testPendingUpgradeFullVerification() public {
+    function test_PendingUpgradeFullVerification() public {
         // Before any upgrade is scheduled
         (address impl, uint64 scheduledTime, bool exists) = treasuryProxy.pendingUpgrade();
         assertEq(impl, address(0), "Implementation should be zero when no upgrade scheduled");
@@ -662,7 +648,7 @@ contract TreasuryBasicTest is Test {
         assertTrue(exists, "Exists should be true");
     }
 
-    function testUpgradeImplementationMismatch() public {
+    function test_UpgradeImplementationMismatch() public {
         // Schedule an upgrade to one implementation
         Treasury scheduledImpl = new Treasury();
 
@@ -684,7 +670,7 @@ contract TreasuryBasicTest is Test {
         treasuryProxy.upgradeToAndCall(address(differentImpl), "");
     }
 
-    function testUpgradeTimelockActive() public {
+    function test_UpgradeTimelockActive() public {
         // Schedule an upgrade
         Treasury newImpl = new Treasury();
 
