@@ -47,7 +47,7 @@ contract InvestorVesting is IVESTING, Context, Ownable2Step, ReentrancyGuard {
      *
      * Emits a {ERC20Released} event.
      */
-    function release() public virtual nonReentrant {
+    function release() public virtual nonReentrant onlyOwner {
         uint256 amount = releasable();
         _erc20Released[_token] += amount;
         emit ERC20Released(_token, amount);
