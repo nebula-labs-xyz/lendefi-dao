@@ -78,7 +78,7 @@ contract EcosystemTest is BasicDeploy {
         bytes memory expError = abi.encodeWithSignature("InvalidInitialization()");
         vm.prank(guardian);
         vm.expectRevert(expError); // contract already initialized
-        ecoInstance.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
+        ecoInstance.initialize(address(tokenInstance), address(timelockInstance), pauser);
     }
 
     function testRevertDoubleInitialize() public {
@@ -88,11 +88,11 @@ contract EcosystemTest is BasicDeploy {
         Ecosystem ecosystem = Ecosystem(payable(address(proxy)));
 
         // First initialization
-        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), pauser);
 
         // Attempt second initialization
         vm.expectRevert(abi.encodeWithSignature("InvalidInitialization()"));
-        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, pauser);
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), pauser);
     }
 
     function testRevertProxyInitializeZeroAddresses() public {
@@ -103,25 +103,21 @@ contract EcosystemTest is BasicDeploy {
 
         // Test zero token address
         vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
-        ecosystem.initialize(address(0), address(timelockInstance), guardian, pauser);
+        ecosystem.initialize(address(0), address(timelockInstance), pauser);
 
         // Test zero timelock address
         vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
-        ecosystem.initialize(address(tokenInstance), address(0), guardian, pauser);
+        ecosystem.initialize(address(tokenInstance), address(0), pauser);
 
         // Test zero guardian address
         vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
-        ecosystem.initialize(address(tokenInstance), address(timelockInstance), address(0), pauser);
-
-        // Test zero pauser address
-        vm.expectRevert(abi.encodeWithSignature("ZeroAddressDetected()"));
-        ecosystem.initialize(address(tokenInstance), address(timelockInstance), guardian, address(0));
+        ecosystem.initialize(address(tokenInstance), address(timelockInstance), address(0));
     }
 
     function testRevertUnpauseWhenNotPaused() public {
         bytes memory expError = abi.encodeWithSignature("ExpectedPause()");
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         vm.expectRevert(expError);
         ecoInstance.unpause();
     }
@@ -292,7 +288,7 @@ contract EcosystemTest is BasicDeploy {
     function testRevertAddPartnerWhenPaused() public {
         bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         vm.prank(address(timelockInstance));
@@ -310,7 +306,7 @@ contract EcosystemTest is BasicDeploy {
     }
 
     function testRevertUpdateMaxRewardWhenPaused() public {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         bytes memory expError = abi.encodeWithSignature("EnforcedPause()");
@@ -422,7 +418,7 @@ contract EcosystemTest is BasicDeploy {
     function testPause() public {
         assertFalse(ecoInstance.paused());
 
-        vm.prank(guardian); // Guardian has PAUSER_ROLE
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         assertTrue(ecoInstance.paused());
@@ -433,7 +429,7 @@ contract EcosystemTest is BasicDeploy {
         ERC1967Proxy proxy = new ERC1967Proxy(
             address(impl),
             abi.encodeWithSelector(
-                impl.initialize.selector, address(tokenInstance), address(timelockInstance), guardian, gnosisSafe
+                impl.initialize.selector, address(tokenInstance), address(timelockInstance), gnosisSafe
             )
         );
 
@@ -442,7 +438,7 @@ contract EcosystemTest is BasicDeploy {
         // Verify roles are assigned correctly per contract implementation
         assertTrue(eco.hasRole(DEFAULT_ADMIN_ROLE, address(timelockInstance)));
         assertTrue(eco.hasRole(MANAGER_ROLE, address(timelockInstance)));
-        assertTrue(eco.hasRole(PAUSER_ROLE, guardian));
+        assertTrue(eco.hasRole(PAUSER_ROLE, address(timelockInstance)));
         assertTrue(eco.hasRole(UPGRADER_ROLE, gnosisSafe));
 
         // Verify other initialization parameters
@@ -522,7 +518,7 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.grantRole(BURNER_ROLE, address(0x9999990));
 
         // Then pause the contract
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         vm.prank(address(0x9999990)); // Has BURNER_ROLE but contract is paused
@@ -628,7 +624,7 @@ contract EcosystemTest is BasicDeploy {
         ecoInstance.grantRole(REWARDER_ROLE, guardian);
 
         // Pause contract
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         // Try to reward when paused
@@ -677,7 +673,7 @@ contract EcosystemTest is BasicDeploy {
     }
 
     function testRevertUnpauseUnauthorized() public {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         vm.prank(alice); // alice doesn't have PAUSER_ROLE
@@ -703,10 +699,10 @@ contract EcosystemTest is BasicDeploy {
     }
 
     function testUnpauseSuccess() public {
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.unpause();
 
         // Verify unpaused by attempting an operation
@@ -853,7 +849,7 @@ contract EcosystemTest is BasicDeploy {
     // Test emergency withdrawal when contract is paused
     function testEmergencyWithdrawTokenWhenPaused() public {
         // Pause the contract
-        vm.prank(guardian);
+        vm.prank(address(timelockInstance));
         ecoInstance.pause();
 
         uint256 ecoBalance = tokenInstance.balanceOf(address(ecoInstance));
