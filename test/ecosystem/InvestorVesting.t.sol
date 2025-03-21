@@ -76,6 +76,7 @@ contract InvestorVestingTest is BasicDeploy {
         assertTrue(amountToClaimAfter > amountToClaimBefore, "Claimable amount should increase over time");
 
         // Simulate a claim
+        vm.prank(alice); //owner
         vestingContract.release();
 
         uint256 amountClaimed = vestingContract.released();
@@ -103,6 +104,7 @@ contract InvestorVestingTest is BasicDeploy {
     // Test case: Ensure no double claiming
     function test_NoDoubleClaiming() public {
         vm.warp(block.timestamp + 700 days);
+        vm.startPrank(alice); //owner
         vestingContract.release(); // First claim
         uint256 claimAmountAfterFirstClaim = vestingContract.released();
         assertTrue(claimAmountAfterFirstClaim > 0, "Claim should be successful");
@@ -110,6 +112,7 @@ contract InvestorVestingTest is BasicDeploy {
         // Trying to claim again should not change anything
         vestingContract.release();
         uint256 claimAmountAfterSecondClaim = vestingContract.released();
+        vm.stopPrank();
 
         assertEq(claimAmountAfterFirstClaim, claimAmountAfterSecondClaim);
     }
