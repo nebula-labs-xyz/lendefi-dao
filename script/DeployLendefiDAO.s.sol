@@ -128,8 +128,7 @@ contract DeployLendefiDAO is Script, Test {
     function deployToken() internal {
         console.log("Deploying Governance Token...");
 
-        bytes memory tokenData =
-            abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance), multisig));
+        bytes memory tokenData = abi.encodeCall(GovernanceToken.initializeUUPS, (guardian, address(timelockInstance)));
 
         // Create options with Defender enabled if configured
         Options memory opts = getDefaultOptions("GovernanceToken.sol");
@@ -154,9 +153,8 @@ contract DeployLendefiDAO is Script, Test {
     function deployEcosystem() internal {
         console.log("Deploying Ecosystem...");
 
-        bytes memory ecosystemData = abi.encodeCall(
-            Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), guardian, multisig)
-        );
+        bytes memory ecosystemData =
+            abi.encodeCall(Ecosystem.initialize, (address(tokenInstance), address(timelockInstance), multisig));
 
         Options memory opts = getDefaultOptions("Ecosystem.sol");
         address payable proxy = payable(Upgrades.deployUUPSProxy("Ecosystem.sol", ecosystemData, opts));
@@ -211,8 +209,7 @@ contract DeployLendefiDAO is Script, Test {
         console.log("Deploying Treasury...");
 
         bytes memory treasuryData = abi.encodeCall(
-            Treasury.initialize,
-            (guardian, address(timelockInstance), multisig, TREASURY_START_OFFSET, TREASURY_VESTING_DURATION)
+            Treasury.initialize, (address(timelockInstance), multisig, TREASURY_START_OFFSET, TREASURY_VESTING_DURATION)
         );
 
         Options memory opts = getDefaultOptions("Treasury.sol");
@@ -242,9 +239,8 @@ contract DeployLendefiDAO is Script, Test {
     function deployTeamManager() internal {
         console.log("Deploying Team Manager...");
 
-        bytes memory teamManagerData = abi.encodeCall(
-            TeamManager.initialize, (address(tokenInstance), address(timelockInstance), guardian, multisig)
-        );
+        bytes memory teamManagerData =
+            abi.encodeCall(TeamManager.initialize, (address(tokenInstance), address(timelockInstance), multisig));
 
         Options memory opts = getDefaultOptions("TeamManager.sol");
         address payable proxy = payable(Upgrades.deployUUPSProxy("TeamManager.sol", teamManagerData, opts));
@@ -275,8 +271,7 @@ contract DeployLendefiDAO is Script, Test {
         console.log("Deploying Investment Manager...");
 
         bytes memory investmentManagerData = abi.encodeCall(
-            InvestmentManager.initialize,
-            (address(tokenInstance), address(timelockInstance), address(treasuryInstance), guardian, multisig)
+            InvestmentManager.initialize, (address(tokenInstance), address(timelockInstance), address(treasuryInstance))
         );
 
         Options memory opts = getDefaultOptions("InvestmentManager.sol");
