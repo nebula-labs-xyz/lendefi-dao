@@ -97,7 +97,7 @@ contract TeamVesting is ITEAMVESTING, Context, Ownable2Step, ReentrancyGuard {
      * @notice Releases vested tokens to the beneficiary
      * @dev Can be called by anyone but tokens are always sent to the owner (beneficiary)
      */
-    function release() public virtual nonReentrant {
+    function release() public virtual nonReentrant onlyOwner {
         uint256 amount = releasable();
         if (amount == 0) return;
 
