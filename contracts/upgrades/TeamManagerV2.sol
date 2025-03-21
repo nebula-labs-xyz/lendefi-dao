@@ -109,23 +109,23 @@ contract TeamManagerV2 is
      * @dev Sets up the initial state of the contract with core functionality
      * @param token The address of the ecosystem token contract
      * @param timelock_ The address of the timelock controller
-     * @param guardian The address of the admin who receives PAUSER_ROLE
      * @param multisig The address receiving UPGRADER_ROLE
      */
-    function initialize(address token, address timelock_, address guardian, address multisig) external initializer {
+    function initialize(address token, address timelock_, address multisig) external initializer {
         __Pausable_init();
         __AccessControl_init();
         __UUPSUpgradeable_init();
         __ReentrancyGuard_init();
 
-        if (token == address(0) || timelock_ == address(0) || guardian == address(0) || multisig == address(0)) {
+        if (token == address(0) || timelock_ == address(0) || multisig == address(0)) {
             revert ZeroAddress();
         }
 
         // Set up roles properly
         _grantRole(DEFAULT_ADMIN_ROLE, timelock_);
-        _grantRole(PAUSER_ROLE, guardian);
+        _grantRole(PAUSER_ROLE, timelock_);
         _grantRole(MANAGER_ROLE, timelock_);
+        _grantRole(UPGRADER_ROLE, timelock_);
         _grantRole(UPGRADER_ROLE, multisig);
 
         timelock = timelock_;
@@ -226,11 +226,11 @@ contract TeamManagerV2 is
         delete pendingUpgrade;
         emit UpgradeCancelled(msg.sender, implementation);
     }
+
     /**
      * @dev Returns the remaining time before a scheduled upgrade can be executed
      * @return timeRemaining The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
      */
-
     function upgradeTimelockRemaining() external view returns (uint256) {
         return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
             ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
