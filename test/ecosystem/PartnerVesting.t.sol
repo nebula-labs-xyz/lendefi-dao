@@ -496,4 +496,50 @@ contract PartnerVestingTest is Test {
 
         assertTrue(foundEvent, "Cancelled event not emitted");
     }
+
+    // Test cancellation during pending ownership transfer
+    function testCancelWithPendingOwnershipTransfer() public {
+        // Warp to 25% through vesting period
+        vm.warp(startTime + vestingDuration / 4);
+
+        // Calculate expected amounts
+        uint256 vestedAmount = vestingAmount / 4; // 25%
+        uint256 unvestedAmount = vestingAmount - vestedAmount;
+
+        // Partner initiates ownership transfer to alice
+        vm.prank(partner);
+        vm.expectEmit(address(vesting));
+        emit OwnershipTransferStarted(partner, alice);
+        vesting.transferOwnership(alice);
+
+        // Verify ownership is still with partner
+        assertEq(vesting.owner(), partner);
+
+        // Cancel contract as creator
+        vm.expectEmit(address(vesting));
+        emit Cancelled(unvestedAmount);
+        vesting.cancelContract();
+
+        // Verify partner (still the owner) got vested tokens
+        assertEq(token.balanceOf(partner), vestedAmount);
+
+        // Verify creator got unvested tokens
+        assertEq(token.balanceOf(address(this)), unvestedAmount);
+
+        // Alice should still be able to accept ownership (Ownable2Step functionality)
+        vm.prank(alice);
+        vm.expectEmit(address(vesting));
+        emit OwnershipTransferred(partner, alice);
+        vesting.acceptOwnership();
+
+        // Verify Alice is now owner
+        assertEq(vesting.owner(), alice);
+
+        // Contract should now be empty - verify balances remain unchanged
+        // (No need to call release() since all tokens were already distributed during cancellation)
+        assertEq(token.balanceOf(partner), vestedAmount, "Partner balance should remain unchanged");
+        assertEq(token.balanceOf(alice), 0, "Alice should not receive any tokens as the contract is empty");
+        assertEq(token.balanceOf(address(this)), unvestedAmount, "Creator balance should remain unchanged");
+        assertEq(token.balanceOf(address(vesting)), 0, "Vesting contract should be empty");
+    }
 }
