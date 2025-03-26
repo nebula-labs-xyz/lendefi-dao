@@ -425,24 +425,6 @@ contract Treasury is
     }
 
     // ============ Internal Functions ============
-
-    /**
-     * @dev Internal function to calculate vested amounts for a given allocation and timestamp
-     * @dev Uses linear vesting between start and end time
-     * @param totalAllocation The total amount to vest
-     * @param timestamp The timestamp to check
-     * @return The amount vested at the specified timestamp
-     */
-    function _vestingSchedule(uint256 totalAllocation, uint256 timestamp) internal view virtual returns (uint256) {
-        if (timestamp < _start) {
-            return 0;
-        } else if (timestamp >= _start + _duration) {
-            return totalAllocation;
-        } else {
-            return (totalAllocation * (timestamp - _start)) / _duration;
-        }
-    }
-
     /**
      * @notice Authorizes and processes contract upgrades with timelock enforcement
      * @dev Internal override for UUPS upgrade authorization
@@ -470,5 +452,22 @@ contract Treasury is
 
         // Emit the upgrade event
         emit Upgraded(msg.sender, newImplementation, _version);
+    }
+
+    /**
+     * @dev Internal function to calculate vested amounts for a given allocation and timestamp
+     * @dev Uses linear vesting between start and end time
+     * @param totalAllocation The total amount to vest
+     * @param timestamp The timestamp to check
+     * @return The amount vested at the specified timestamp
+     */
+    function _vestingSchedule(uint256 totalAllocation, uint256 timestamp) internal view virtual returns (uint256) {
+        if (timestamp < _start) {
+            return 0;
+        } else if (timestamp >= _start + _duration) {
+            return totalAllocation;
+        } else {
+            return (totalAllocation * (timestamp - _start)) / _duration;
+        }
     }
 }
