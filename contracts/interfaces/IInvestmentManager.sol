@@ -24,36 +24,54 @@ interface IINVMANAGER {
     // ============ Structs ============
 
     /**
-     * @dev Structure containing allocation details for an investor
+     * @notice Investor allocation details
+     * @dev Tracks individual investor allocations within a round
+     * @param etherAmount Maximum ETH that can be invested
+     * @param tokenAmount Tokens to be received for full allocation
      */
     struct Allocation {
-        uint256 etherAmount; // Amount of ETH allocated
-        uint256 tokenAmount; // Amount of tokens allocated
+        uint256 etherAmount;
+        uint256 tokenAmount;
     }
 
     /**
-     * @dev Structure containing details of an investment round
+     * @notice Investment round details
+     * @dev Contains all parameters and current state of an investment round
+     * @param etherTarget Total ETH to be raised
+     * @param etherInvested Current amount of ETH invested
+     * @param tokenAllocation Total tokens allocated to the round
+     * @param tokenDistributed Tokens that have been distributed to vesting contracts
+     * @param startTime Round opening timestamp
+     * @param endTime Round closing timestamp
+     * @param vestingCliff Time before vesting begins
+     * @param vestingDuration Total vesting period length
+     * @param participants Number of investors in the round
+     * @param status Current state of the round
      */
     struct Round {
-        uint256 etherTarget; // Target ETH to raise
-        uint256 etherInvested; // Current ETH raised
-        uint256 tokenAllocation; // Total token allocation for the round
-        uint256 tokenDistributed; // Tokens distributed so far
-        uint64 startTime; // Start timestamp
-        uint64 endTime; // End timestamp
-        uint64 vestingCliff; // Vesting cliff period in seconds
-        uint64 vestingDuration; // Vesting duration in seconds
-        uint32 participants; // Number of participants
-        RoundStatus status; // Current status of the round
+        uint256 etherTarget;
+        uint256 etherInvested;
+        uint256 tokenAllocation;
+        uint256 tokenDistributed;
+        uint64 startTime;
+        uint64 endTime;
+        uint64 vestingCliff;
+        uint64 vestingDuration;
+        uint32 participants;
+        RoundStatus status;
     }
 
     /**
-     * @dev Structure to track pending upgrades with timelock
+     * @notice Upgrade request details
+     * @dev Tracks pending contract upgrades with timelock
+     * @param implementation New implementation contract address
+     * @param scheduledTime When the upgrade was requested
+     * @param exists Whether this upgrade request is active
      */
     struct UpgradeRequest {
-        address implementation; // New implementation address
-        uint64 scheduledTime; // When upgrade was scheduled
-        bool exists; // Whether an upgrade is scheduled
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
     }
 
     // ============ Events ============
