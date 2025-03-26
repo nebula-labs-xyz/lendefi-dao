@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: BUSL-1.1
 pragma solidity 0.8.23;
 
 /**
@@ -11,7 +11,12 @@ pragma solidity 0.8.23;
 interface IECOSYSTEM {
     // ============ Structs ============
 
-    /// @dev Structure to track pending upgrades with timelock
+    /**
+     * @dev Structure to track pending upgrades with timelock
+     * @param implementation The address of the new implementation contract
+     * @param scheduledTime The timestamp when the upgrade was scheduled
+     * @param exists Boolean flag indicating if an upgrade is currently scheduled
+     */
     struct UpgradeRequest {
         address implementation;
         uint64 scheduledTime;
@@ -99,7 +104,7 @@ interface IECOSYSTEM {
     );
 
     /**
-     * @notice Emitted when a scheduled upgrade is cancelled
+     * @dev Emitted when a scheduled upgrade is cancelled
      * @param canceller The address that cancelled the upgrade
      * @param implementation The implementation address that was cancelled
      */
@@ -113,18 +118,29 @@ interface IECOSYSTEM {
     event EmergencyWithdrawal(address indexed token, uint256 amount);
 
     // ============ Errors ============
+
     /**
      * @dev Error thrown for general validation failures
      * @param reason Description of the validation failure
      */
     error ValidationFailed(string reason);
-    /// @dev Thrown when trying to execute an upgrade too soon
+
+    /**
+     * @dev Error thrown if you try to upgrade while the timelock is active
+     * @param remainingTime Time remaining in the timelock period
+     */
     error UpgradeTimelockActive(uint256 remainingTime);
 
-    /// @dev Thrown when trying to execute an upgrade that wasn't scheduled
+    /**
+     * @dev Thrown when trying to execute an upgrade that wasn't scheduled
+     */
     error UpgradeNotScheduled();
 
-    /// @dev Thrown when trying to execute an upgrade with wrong implementation
+    /**
+     * @dev Thrown when trying to execute an upgrade with wrong implementation
+     * @param expected The implementation address that was scheduled
+     * @param provided The implementation address that was attempted
+     */
     error ImplementationMismatch(address expected, address provided);
 
     /**
@@ -208,18 +224,20 @@ interface IECOSYSTEM {
      * @dev Thrown when attempting to set an invalid vesting duration
      */
     error InvalidVestingSchedule();
+
     /**
      * @dev Error thrown when attempting operations with zero balance
      */
     error ZeroBalance();
+
     // ============ Functions ============
 
     /**
      * @notice Initializes the ecosystem contract
      * @dev Sets up the initial state of the contract, including roles and token supplies
      * @param token Address of the governance token
-     * @param timelockAddr Address of the timelock controller for partner vesting cancellation
-     * @param multisig Address of the multisig (receives UPGRADER_ROLE)
+     * @param timelockAddr Address of the timelock controller
+     * @param multisig Address of the multisig wallet
      */
     function initialize(address token, address timelockAddr, address multisig) external;
 
@@ -243,6 +261,12 @@ interface IECOSYSTEM {
     function scheduleUpgrade(address newImplementation) external;
 
     /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Can only be called by accounts with the UPGRADER_ROLE
+     */
+    function cancelUpgrade() external;
+
+    /**
      * @notice Returns the remaining time before a scheduled upgrade can be executed
      * @dev Returns 0 if no upgrade is scheduled or timelock has passed
      * @return The time remaining in seconds
@@ -258,7 +282,7 @@ interface IECOSYSTEM {
 
     /**
      * @notice Distributes tokens to multiple recipients
-     * @dev Performs an airdrop of a fixed amount of tokens to each address in the recipients array
+     * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param recipients Array of addresses to receive the airdrop
      * @param amount Amount of tokens each recipient will receive
      */
@@ -266,7 +290,7 @@ interface IECOSYSTEM {
 
     /**
      * @notice Rewards a single address with tokens
-     * @dev Transfers a specified amount of tokens to a recipient as a reward
+     * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param to Recipient address
      * @param amount Amount of tokens to reward
      */
@@ -274,14 +298,14 @@ interface IECOSYSTEM {
 
     /**
      * @notice Burns tokens from the reward supply
-     * @dev Permanently removes tokens from circulation, updating supply calculations
+     * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param amount Amount of tokens to burn
      */
     function burn(uint256 amount) external;
 
     /**
      * @notice Creates a vesting contract for a new partner
-     * @dev Deploys a new PartnerVesting contract and funds it with the specified amount
+     * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param partner Address of the partner
      * @param amount Amount of tokens to vest
      * @param cliff Cliff period in seconds
@@ -291,52 +315,45 @@ interface IECOSYSTEM {
 
     /**
      * @notice Cancels a partner's vesting contract
-     * @dev Returns unvested tokens to the timelock and updates accounting
+     * @dev Can only be called by the timelock
      * @param partner Address of the partner
      */
     function cancelPartnership(address partner) external;
 
     /**
      * @notice Updates the maximum one-time reward amount
-     * @dev Sets a new limit on the maximum tokens that can be rewarded in one transaction
+     * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param newMaxReward New maximum reward value
      */
     function updateMaxReward(uint256 newMaxReward) external;
 
     /**
      * @notice Updates the maximum one-time burn amount
-     * @dev Sets a new limit on the maximum tokens that can be burned in one transaction
+     * @dev Can only be called by accounts with the MANAGER_ROLE
      * @param newMaxBurn New maximum burn value
      */
     function updateMaxBurn(uint256 newMaxBurn) external;
 
     /**
      * @notice Returns the available reward supply
-     * @dev Calculates tokens available for rewards by subtracting issued rewards from total supply
+     * @dev Calculates remaining reward tokens
      * @return Available tokens in the reward supply
      */
     function availableRewardSupply() external view returns (uint256);
 
     /**
      * @notice Returns the available airdrop supply
-     * @dev Calculates tokens available for airdrops by subtracting issued airdrops from total supply
+     * @dev Calculates remaining airdrop tokens
      * @return Available tokens in the airdrop supply
      */
     function availableAirdropSupply() external view returns (uint256);
 
     /**
      * @notice Returns the available partnership supply
-     * @dev Calculates tokens available for partnerships by subtracting issued partnerships from total supply
+     * @dev Calculates remaining partnership tokens
      * @return Available tokens in the partnership supply
      */
     function availablePartnershipSupply() external view returns (uint256);
-
-    /**
-     * @notice Information about the pending upgrade request
-     * @dev Returns details of the currently scheduled upgrade, if any
-     * @return The pending upgrade request details
-     */
-    // function pendingUpgrade() external view returns (UpgradeRequest memory);
 
     /**
      * @notice Gets the total reward supply
@@ -410,14 +427,4 @@ interface IECOSYSTEM {
      * @return The vesting contract address
      */
     function vestingContracts(address partner) external view returns (address);
-
-    /**
-     * @notice Cancels a previously scheduled upgrade
-     * @dev Removes a pending upgrade from the schedule
-     * @custom:access Restricted to UPGRADER_ROLE
-     * @custom:state-changes
-     *      - Clears the pendingUpgrade data
-     *      - Emits an UpgradeCancelled event
-     */
-    function cancelUpgrade() external;
 }
