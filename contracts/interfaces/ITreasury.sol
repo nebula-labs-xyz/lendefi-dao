@@ -12,7 +12,11 @@ interface ITREASURY {
     /* ========== STRUCTS ========== */
 
     /**
-     * @dev Structure to track pending upgrades with timelock
+     * @notice Upgrade request details
+     * @dev Tracks pending contract upgrades with timelock
+     * @param implementation New implementation contract address
+     * @param scheduledTime When the upgrade was requested
+     * @param exists Whether this upgrade request is active
      */
     struct UpgradeRequest {
         address implementation;
