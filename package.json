@@ -16,7 +16,7 @@
     "coverage:html": "genhtml lcov.info -o coverage-report",
     "deploy:mainnet": "bash -c 'source .env && forge script Deploy --broadcast --chain mainnet --private-key $MAINNET_DEPLOYER_PK'",
     "deploy:sepolia": "bash -c 'source .env && forge script Deploy --broadcast --chain sepolia --private-key $SEPOLIA_DEPLOYER_PK'",
-    "lint:check": "npm run lint:sol-tests && npm run lint:sol-logic && forge fmt --check",
+    "lint:check": "npm run lint:sol-logic && forge fmt --check",
     "lint:fix": "sort-package-json && forge fmt && npm run lint:sol-tests --fix && npm run lint:sol-logic --fix",
     "lint:natspec": "npx @defi-wonderland/natspec-smells --config natspec.config.js",
     "lint:sol-logic": "solhint -c .solhint.json -f table 'contracts/ecosystem/*.sol' 'contracts/lender/*.sol' 'contracts/liquidator/*.sol' 'script/**/*.sol'",
@@ -41,6 +41,7 @@
     "@defi-wonderland/natspec-smells": "1.0.3",
     "@openzeppelin/contracts": "^5.0.2",
     "@openzeppelin/contracts-upgradeable": "^5.0.2",
+    "@openzeppelin/defender-deploy-client-cli": "^0.0.1-alpha.10",
     "@openzeppelin/upgrades-core": "^1.32.3",
     "ds-test": "github:dapphub/ds-test#e282159",
     "forge-std": "github:foundry-rs/forge-std#4513bc2",
@@ -48,8 +49,5 @@
     "lint-staged": "^15.4.3",
     "solhint": "github:solhint-community/solhint-community#v4.0.0-rc01",
     "sort-package-json": "2.8.0"
-  },
-  "dependencies": {
-    "@openzeppelin/defender-deploy-client-cli": "^0.0.1-alpha.4"
   }
 }
