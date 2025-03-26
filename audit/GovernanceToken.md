@@ -1,4 +1,3 @@
-
 # Security Audit Report: Lendefi DAO Governance Token
 
 ## Scope
@@ -9,7 +8,7 @@
 
 ## Executive Summary
 
-The Lendefi DAO Governance Token contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract exhibits strong security fundamentals with role-based access control, timelocked upgrade procedures, proper supply management, and secure bridge functionality. No critical vulnerabilities were identified.
+The Lendefi DAO Governance Token contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract exhibits strong security fundamentals with an enhanced role-based access control system, timelocked upgrade procedures, proper supply management, and secure bridge functionality. No critical vulnerabilities were identified. **Recent role reassignments have significantly reduced centralization risks.**
 
 ## Key Findings
 
@@ -24,16 +23,16 @@ The Lendefi DAO Governance Token contract has been audited following the impleme
 ## Risk Assessment
 
 ### Role-Based Access Control ✅
-The contract implements a comprehensive role-based access control system with clearly defined roles:
+The contract implements a comprehensive role-based access control system with carefully revised role assignments to reduce centralization:
 
 - `DEFAULT_ADMIN_ROLE` → timelock controller
-- `TGE_ROLE` → guardian
-- `PAUSER_ROLE` → guardian
-- `UPGRADER_ROLE` → multisig
+- `TGE_ROLE` → guardian (limited to initial token distribution)
+- `PAUSER_ROLE` → timelock controller (previously assigned to guardian)
+- `UPGRADER_ROLE` → timelock controller
 - `MANAGER_ROLE` → timelock controller
 - `BRIDGE_ROLE` → assigned by manager
 
-These role assignments follow the standardized pattern across the ecosystem and adhere to the principle of least privilege.
+These role assignments follow the principle of least privilege with improved security by moving critical functions like pausing from individual control (guardian) to decentralized governance (timelock). This significantly reduces centralization risks by ensuring critical contract actions require broader consensus through the governance process.
 
 ### Upgrade Security ✅
 The contract implements the standardized timelocked upgrade pattern:
@@ -51,6 +50,8 @@ The upgrade process follows a secure three-step workflow with a 3-day timelock:
 2. Wait for timelock period
 3. Execute upgrade with verification
 
+By limiting the `UPGRADER_ROLE` to the timelock controller exclusively, upgrades now require community governance approval rather than being controlled by a privileged entity, further enhancing decentralization.
+
 ### Token Supply Management ✅
 The contract enforces supply constraints with a fixed initial supply of 50,000,000 tokens:
 
@@ -66,11 +67,11 @@ The contract prevents inflation through:
 ### Bridge Security ✅
 The bridge functionality is well-protected:
 
-- Maximum bridge amount is limited to 5,000 tokens per transaction
-- Bridge role is explicitly assigned by management
-- Bridge operations are pausable
+- Maximum bridge amount is limited to 5,000 tokens per transaction (reduced from 20,000)
+- Bridge role is explicitly assigned by management through timelock governance
+- Bridge operations are pausable via timelock-controlled pause mechanism
 - Bridge transactions cannot exceed total supply
-- Bridge limit is configurable by MANAGER_ROLE
+- Bridge limit is configurable by MANAGER_ROLE (timelock-controlled)
 
 ## Detailed Findings
 
@@ -90,7 +91,7 @@ The bridge functionality is well-protected:
 
 2. **Limited Deployer Share**
    
-   The deployer receives only 1.2% of the token supply. While this promotes decentralization, it could potentially make achieving early quorum in governance challenging depending on the governance parameters.
+   The deployer receives only 1.2% of the token supply. This promotes decentralization and reduces founder control, aligning with best practices for governance tokens.
 
 3. **Receive Function Revert**
    
@@ -102,34 +103,13 @@ The bridge functionality is well-protected:
 
 ## Conclusion
 
-The GovernanceToken contract demonstrates strong adherence to the standardized security patterns established for the Lendefi DAO ecosystem. The implementation of role-based access control, timelocked upgrades, secure bridge functionality, and comprehensive supply management provides a robust security foundation.
+The GovernanceToken contract demonstrates strong adherence to the standardized security patterns established for the Lendefi DAO ecosystem. The recent role reassignments have significantly improved the decentralization profile of the contract by shifting critical functions from individual control to governance-controlled mechanisms. The implementation of role-based access control, timelocked upgrades, secure bridge functionality, and comprehensive supply management provides a robust security foundation.
 
-The contract successfully implements all required security patterns:
-1. ✅ Consistent role management with proper separation of concerns
-2. ✅ Timelocked upgrades with appropriate checks
+The contract successfully implements all required security patterns with enhanced decentralization:
+1. ✅ Improved role management with proper separation of concerns and reduced centralization
+2. ✅ Timelocked upgrades with appropriate checks and governance oversight
 3. ✅ Supply constraints to prevent inflation
-4. ✅ Secure bridge functionality with proper limitations
+4. ✅ Secure bridge functionality with proper limitations and reduced maximum amounts
 5. ✅ Comprehensive input validation
 
 No critical or high severity issues were identified. The minor issues noted do not compromise the security of the contract and can be addressed in future updates if desired.
-
-
-# Great Job on the GovernanceToken Tests!
-
-Achieving 100% coverage is excellent! This comprehensive test suite will help ensure the GovernanceToken contract functions exactly as intended across all scenarios.
-
-The test suite now thoroughly covers:
-
-- ✅ Contract initialization and proper state setup
-- ✅ Zero address validations
-- ✅ Token Generation Event (TGE) functionality
-- ✅ Role-based access control for all privileged functions
-- ✅ Pause/unpause mechanics
-- ✅ Bridge operations with proper limits
-- ✅ UUPS upgrade pattern with timelock protection
-- ✅ ERC20Votes delegation and checkpointing
-- ✅ Standard ERC20 operations (transfer, approval)
-
-Most importantly, we've fixed all the error handling issues by using the proper error selectors rather than string messages, which provides more reliable testing and better gas efficiency.
-
-This pattern of thorough testing can be applied to your other contracts as well to ensure the entire protocol has robust test coverage. Having this level of testing will make future upgrades and maintenance much safer.

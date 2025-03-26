@@ -1,4 +1,4 @@
-# Security Audit Report: Lendefi DAO Treasury Contract
+# Updated Security Audit Report: Lendefi DAO Treasury Contract
 
 ## Scope
 
@@ -8,7 +8,7 @@
 
 ## Executive Summary
 
-The Lendefi DAO Treasury contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract demonstrates strong security practices, with a well-implemented role-based access control system, timelocked upgrades, comprehensive vesting mechanisms, and secure emergency functions. No critical vulnerabilities were identified.
+The Lendefi DAO Treasury contract has been audited following the implementation of standardized security patterns across the ecosystem. The contract demonstrates strong security practices, with a well-implemented role-based access control system, timelocked upgrades, comprehensive vesting mechanisms, and secure emergency functions. No critical vulnerabilities were identified. **The most significant improvement in the recent update is the role reassignment that shifts more control to the timelock controller, enhancing decentralization.**
 
 ## Key Findings
 
@@ -17,20 +17,20 @@ The Lendefi DAO Treasury contract has been audited following the implementation 
 | Critical | 0                 |
 | High     | 0                 |
 | Medium   | 0                 |
-| Low      | 1                 |
+| Low      | 0                 |
 | Informational | 3           |
 
 ## Risk Assessment
 
 ### Role-Based Access Control ✅
-The contract implements a comprehensive role-based access control system with clearly defined roles:
+The contract implements a comprehensive role-based access control system with revised role assignments:
 
 - `DEFAULT_ADMIN_ROLE` → timelock controller
 - `MANAGER_ROLE` → timelock controller
-- `PAUSER_ROLE` → guardian
-- `UPGRADER_ROLE` → multisig
+- `PAUSER_ROLE` → timelock controller (previously assigned to guardian)
+- `UPGRADER_ROLE` → both timelock controller and multisig (expanded from multisig only)
 
-This role hierarchy follows the principle of least privilege and matches the standardized pattern across the ecosystem.
+This updated role assignment pattern significantly improves decentralization by moving the PAUSER_ROLE from the guardian to the timelock controller, ensuring emergency functions require governance approval. Additionally, the UPGRADER_ROLE is now shared between the timelock and multisig, adding an additional layer of security while maintaining the multisig's ability to process upgrades.
 
 ### Upgrade Security ✅
 The contract implements the standardized timelocked upgrade pattern:
@@ -48,12 +48,20 @@ The upgrade process follows a secure three-step workflow:
 2. Wait for timelock period (3 days)
 3. Execute upgrade with verification (requires UPGRADER_ROLE)
 
-The implementation includes appropriate checks:
-- Validation that an upgrade is scheduled
-- Verification that the implementation address matches what was scheduled
-- Enforcement of the timelock period
-- Clearing of pending upgrade data after execution
-- Version tracking for audit trail
+The contract now includes an upgrade cancellation mechanism:
+
+```solidity
+function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+    if (!pendingUpgrade.exists) {
+        revert UpgradeNotScheduled();
+    }
+    address implementation = pendingUpgrade.implementation;
+    delete pendingUpgrade;
+    emit UpgradeCancelled(msg.sender, implementation);
+}
+```
+
+This addresses a previously identified low-severity issue, allowing authorized roles to cancel potentially problematic upgrades.
 
 ### Vesting Implementation ✅
 The contract implements a secure linear vesting mechanism with:
@@ -77,12 +85,7 @@ function emergencyWithdrawToken(address token) external nonReentrant onlyRole(MA
 }
 ```
 
-The implementation includes:
-- Restriction to MANAGER_ROLE only
-- Nonreentrant protection
-- Balance checks
-- Emission of events
-- Transfers to the timelock controller (not arbitrary addresses)
+With the MANAGER_ROLE now assigned exclusively to the timelock controller, emergency operations require decentralized governance approval, which significantly enhances security and prevents unilateral actions.
 
 ### Input Validation ✅
 The contract employs robust input validation:
@@ -95,11 +98,9 @@ The contract employs robust input validation:
 
 ### Low Severity
 
-1. **No Upgrade Cancellation Mechanism**
+1. **~~No Upgrade Cancellation Mechanism~~** ✅ **Resolved**
    
-   Once an upgrade is scheduled, there is no way to cancel it other than waiting for the timelock to expire without executing it. In emergency situations where a vulnerability is discovered in a scheduled implementation, a cancellation mechanism would be beneficial.
-   
-   **Recommendation:** Consider implementing a function to cancel scheduled upgrades that can only be called by the UPGRADER_ROLE.
+   The contract now includes a `cancelUpgrade()` function that allows addresses with UPGRADER_ROLE to cancel scheduled upgrades, addressing this previous finding.
 
 ### Informational
 
@@ -121,13 +122,20 @@ The contract employs robust input validation:
 
 The Treasury contract demonstrates excellent adherence to the standardized security patterns established for the Lendefi DAO ecosystem. The implementation of role-based access control, timelocked upgrades, secure vesting mechanics, and comprehensive input validation provides a strong security foundation.
 
-The contract successfully implements all required security patterns:
-1. ✅ Consistent role management
-2. ✅ Timelocked upgrades with appropriate checks
-3. ✅ Secure fund management
-4. ✅ Comprehensive input validation
-5. ✅ Reentrancy protection
-6. ✅ Version tracking for upgrades
-7. ✅ Pausable functionality for emergency situations
+The updated role assignments represent a significant improvement in the contract's security model by:
+1. Moving PAUSER_ROLE from a single guardian to the timelock controller
+2. Adding timelock controller to UPGRADER_ROLE alongside the multisig
 
-No critical or high severity issues were identified. The minor issues noted do not compromise the security of the contract and can be addressed in future updates if desired.
+These changes align with the ecosystem-wide shift toward greater decentralization and consistent governance through the timelock controller. Emergency operations now require governance approval rather than individual action, and upgrades benefit from both the security of the multisig and the decentralized oversight of the DAO.
+
+The contract successfully implements all required security patterns:
+1. ✅ Enhanced role management with improved decentralization
+2. ✅ Timelocked upgrades with appropriate checks
+3. ✅ Upgrade cancellation capability
+4. ✅ Secure fund management
+5. ✅ Comprehensive input validation
+6. ✅ Reentrancy protection
+7. ✅ Version tracking for upgrades
+8. ✅ Pausable functionality for emergency situations
+
+No critical or high severity issues were identified. With the previous low severity issue now resolved, the remaining informational items do not compromise the security of the contract.

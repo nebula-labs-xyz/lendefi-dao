@@ -8,8 +8,7 @@
 
 ## Executive Summary
 
-The Investment Manager contract has been audited following the implementation of standardized security patterns across the Lendefi DAO ecosystem. The contract demonstrates robust security controls with a well-implemented role-based access control system, timelocked upgrades, and comprehensive investment round management. One notable deviation from other ecosystem contracts is the assignment of certain critical roles to a gnosis safe multisig rather than the timelock controller.
-
+The Investment Manager contract has been audited following the implementation of standardized security patterns across the Lendefi DAO ecosystem. The contract demonstrates robust security controls with a well-implemented role-based access control system, timelocked upgrades, and comprehensive investment round management. **A significant improvement in the recent update is the alignment of all role assignments with the broader ecosystem pattern, with all critical roles now assigned to the timelock controller.**
 
 ## Key Findings
 
@@ -17,22 +16,22 @@ The Investment Manager contract has been audited following the implementation of
 |----------|-------------------|
 | Critical | 0                 |
 | High     | 0                 |
-| Medium   | 1                 |
+| Medium   | 0                 |
 | Low      | 2                 |
 | Informational | 3           |
 
 ## Risk Assessment
 
-### Role-Based Access Control ⚠️
-The contract implements a comprehensive role-based access control system with defined roles:
+### Role-Based Access Control ✅
+The contract implements a comprehensive role-based access control system with role assignments now fully aligned with the ecosystem pattern:
 
 - `DEFAULT_ADMIN_ROLE` → timelock controller
-- `MANAGER_ROLE` → gnosisSafe multisig *(deviation from ecosystem pattern)*
-- `PAUSER_ROLE` → guardian
+- `MANAGER_ROLE` → timelock controller
+- `PAUSER_ROLE` → timelock controller
+- `UPGRADER_ROLE` → timelock controller
 - `DAO_ROLE` → timelock controller
-- `UPGRADER_ROLE` → gnosisSafe multisig 
 
-While the separation of concerns is good, this deviates from the standard pattern in other ecosystem contracts where `MANAGER_ROLE` is typically assigned to the timelock controller.
+This implementation ensures that all critical contract functions are governed through the DAO's timelock controller, providing consistent decentralized governance across the ecosystem. This represents a significant security improvement compared to the previous implementation where certain roles were assigned to a gnosis safe multisig.
 
 ### Upgrade Security ✅
 The contract implements the standardized timelocked upgrade pattern with a 3-day delay:
@@ -49,6 +48,8 @@ The upgrade process follows a secure three-step workflow:
 1. Schedule upgrade (with implementation address)
 2. Wait for timelock period (3 days)
 3. Execute upgrade with verification
+
+With the `UPGRADER_ROLE` now assigned to the timelock controller, upgrades require on-chain governance approval, enhancing security and decentralization.
 
 ### Emergency Functions ✅
 Emergency withdrawal functions follow secure patterns:
@@ -69,7 +70,7 @@ function emergencyWithdrawToken(address token)
 ```
 
 Security characteristics:
-- Only MANAGER_ROLE can execute
+- Only MANAGER_ROLE (timelock) can execute
 - Uses nonReentrant guard
 - Transfers to timelock
 - Validates token address
@@ -85,14 +86,6 @@ The contract implements a robust state machine for investment rounds:
 - Gas-optimized investor tracking
 
 ## Detailed Findings
-
-### Medium Severity
-
-1. **Role Assignment Inconsistency**
-   
-   The `MANAGER_ROLE` is assigned to a gnosis safe multisig instead of the timelock controller, which deviates from the ecosystem pattern found in other contracts. This means that emergency withdrawals and round management are controlled by the multisig rather than going through on-chain governance.
-   
-   **Recommendation:** Consider adjusting role assignments to match the ecosystem pattern or document this deviation explicitly as an intentional design decision.
 
 ### Low Severity
 
@@ -134,15 +127,15 @@ The contract implements a robust state machine for investment rounds:
 
 ## Conclusion
 
-The Investment Manager contract demonstrates strong security practices with comprehensive role-based access control, timelocked upgrades, and secure investment processing. The primary concern is the assignment of the `MANAGER_ROLE` to a gnosis safe multisig rather than the timelock controller, which creates a deviation from the ecosystem pattern found in other contracts.
+The Investment Manager contract demonstrates strong security practices with comprehensive role-based access control, timelocked upgrades, and secure investment processing. The updated role assignments, which now align all critical roles with the timelock controller, represent a significant security improvement that ensures consistent governance across the Lendefi DAO ecosystem.
 
-While this deviation isn't necessarily a vulnerability, it could lead to confusion about governance flows and centralization risks. It's recommended to either align the role assignments with the ecosystem pattern or explicitly document this as an intentional design decision.
+This improvement removes the previous centralization concern where certain roles were assigned to a gnosis safe multisig rather than the timelock controller. All critical operations now require on-chain governance approval through the timelock, enhancing security and decentralization.
 
-The contract successfully implements most required security patterns:
-1. ✅ Timelocked upgrades with appropriate checks
-2. ✅ Emergency functions with proper access control
-3. ✅ Reentrancy protection
-4. ✅ Comprehensive input validation
-5. ⚠️ Role management (with noted inconsistency)
+The contract successfully implements all required security patterns:
+1. ✅ Role management with proper separation of concerns and alignment with ecosystem patterns
+2. ✅ Timelocked upgrades with appropriate checks
+3. ✅ Emergency functions with proper access control
+4. ✅ Reentrancy protection
+5. ✅ Comprehensive input validation
 
-No critical vulnerabilities were identified, and with the suggested improvements, the contract would fully align with the ecosystem's security standards.
+No critical or high severity vulnerabilities were identified. The remaining low severity and informational issues do not compromise the security of the contract and can be addressed in future updates if desired.
