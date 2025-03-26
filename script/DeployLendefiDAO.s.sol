@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.23;
 
-import "forge-std/Script.sol";
+import {Script, console} from "forge-std/Script.sol";
 import {Test} from "forge-std/Test.sol";
 import {GovernanceToken} from "../contracts/ecosystem/GovernanceToken.sol";
 import {Ecosystem} from "../contracts/ecosystem/Ecosystem.sol";
@@ -21,10 +21,24 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
  * @dev Deploys and configures all core contracts with proper access controls and inline verification
  */
 contract DeployLendefiDAO is Script, Test {
+    // Constants
+    uint256 internal constant TIMELOCK_DELAY = 24 hours;
+    uint256 internal constant TREASURY_START_OFFSET = 180 days;
+    uint256 internal constant TREASURY_VESTING_DURATION = 3 * 365 days;
+
+    // Common roles
+    bytes32 internal constant DEFAULT_ADMIN_ROLE = 0x00;
+    bytes32 internal constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
+    bytes32 internal constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
+    bytes32 internal constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
+    bytes32 internal constant PROPOSER_ROLE = keccak256("PROPOSER_ROLE");
+    bytes32 internal constant EXECUTOR_ROLE = keccak256("EXECUTOR_ROLE");
+    bytes32 internal constant CANCELLER_ROLE = keccak256("CANCELLER_ROLE");
+    address internal constant ETHEREUM = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
+
     // Core addresses from environment variables
     address public guardian;
     address public multisig;
-    address constant ethereum = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
     // Core contract instances
     TimelockControllerUpgradeable public timelockInstance;
@@ -34,17 +48,6 @@ contract DeployLendefiDAO is Script, Test {
     Treasury public treasuryInstance;
     InvestmentManager public investmentManagerInstance;
     TeamManager public teamManagerInstance;
-
-    // Constants
-    uint256 public constant TIMELOCK_DELAY = 24 hours;
-    uint256 public constant TREASURY_START_OFFSET = 180 days;
-    uint256 public constant TREASURY_VESTING_DURATION = 3 * 365 days;
-
-    // Common roles
-    bytes32 constant DEFAULT_ADMIN_ROLE = 0x00;
-    bytes32 constant PAUSER_ROLE = keccak256("PAUSER_ROLE");
-    bytes32 constant UPGRADER_ROLE = keccak256("UPGRADER_ROLE");
-    bytes32 constant MANAGER_ROLE = keccak256("MANAGER_ROLE");
 
     // Defender integration variables
     string public relayerId;
@@ -102,8 +105,8 @@ contract DeployLendefiDAO is Script, Test {
         // Set initial proposers and executors
         address[] memory proposers = new address[](1);
         address[] memory executors = new address[](1);
-        proposers[0] = ethereum;
-        executors[0] = ethereum;
+        proposers[0] = ETHEREUM;
+        executors[0] = ETHEREUM;
 
         TimelockControllerUpgradeable timelock = new TimelockControllerUpgradeable();
         bytes memory timelockData = abi.encodeWithSelector(
@@ -115,8 +118,8 @@ contract DeployLendefiDAO is Script, Test {
 
         // Verify timelock deployment
         assertTrue(address(timelockInstance) != address(0), "Timelock deployment failed");
-        assertTrue(timelockInstance.hasRole(timelockInstance.PROPOSER_ROLE(), ethereum), "Proposer role not set");
-        assertTrue(timelockInstance.hasRole(timelockInstance.EXECUTOR_ROLE(), ethereum), "Executor role not set");
+        assertTrue(timelockInstance.hasRole(timelockInstance.PROPOSER_ROLE(), ETHEREUM), "Proposer role not set");
+        assertTrue(timelockInstance.hasRole(timelockInstance.EXECUTOR_ROLE(), ETHEREUM), "Executor role not set");
         assertEq(timelockInstance.getMinDelay(), TIMELOCK_DELAY, "Timelock delay not set correctly");
 
         console.log("* Timelock deployed and verified at:", address(timelockInstance));
@@ -308,16 +311,11 @@ contract DeployLendefiDAO is Script, Test {
     function configureAccessControl() internal {
         console.log("Configuring access controls...");
 
-        // Configure timelock to recognize the governor
-        bytes32 PROPOSER_ROLE = timelockInstance.PROPOSER_ROLE();
-        bytes32 EXECUTOR_ROLE = timelockInstance.EXECUTOR_ROLE();
-        bytes32 CANCELLER_ROLE = timelockInstance.CANCELLER_ROLE();
-
-        // Transfer timelock control from ethereum placeholder to governor
+        // Transfer timelock control from ETHEREUM placeholder to governor
         vm.startPrank(guardian);
-        timelockInstance.revokeRole(PROPOSER_ROLE, ethereum);
-        timelockInstance.revokeRole(EXECUTOR_ROLE, ethereum);
-        timelockInstance.revokeRole(CANCELLER_ROLE, ethereum);
+        timelockInstance.revokeRole(PROPOSER_ROLE, ETHEREUM);
+        timelockInstance.revokeRole(EXECUTOR_ROLE, ETHEREUM);
+        timelockInstance.revokeRole(CANCELLER_ROLE, ETHEREUM);
 
         timelockInstance.grantRole(PROPOSER_ROLE, address(governorInstance));
         timelockInstance.grantRole(EXECUTOR_ROLE, address(governorInstance));
@@ -329,9 +327,9 @@ contract DeployLendefiDAO is Script, Test {
         assertTrue(timelockInstance.hasRole(EXECUTOR_ROLE, address(governorInstance)), "Governor not executor");
         assertTrue(timelockInstance.hasRole(CANCELLER_ROLE, address(governorInstance)), "Governor not canceller");
 
-        assertFalse(timelockInstance.hasRole(PROPOSER_ROLE, ethereum), "Ethereum still proposer");
-        assertFalse(timelockInstance.hasRole(EXECUTOR_ROLE, ethereum), "Ethereum still executor");
-        assertFalse(timelockInstance.hasRole(CANCELLER_ROLE, ethereum), "Ethereum still canceller");
+        assertFalse(timelockInstance.hasRole(PROPOSER_ROLE, ETHEREUM), "ETHEREUM still proposer");
+        assertFalse(timelockInstance.hasRole(EXECUTOR_ROLE, ETHEREUM), "ETHEREUM still executor");
+        assertFalse(timelockInstance.hasRole(CANCELLER_ROLE, ETHEREUM), "ETHEREUM still canceller");
 
         console.log("* Access controls configured and verified successfully");
     }
