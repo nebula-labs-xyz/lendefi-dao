@@ -181,8 +181,8 @@ contract GovernanceToken is
         if (addr == address(0)) revert ZeroAddress();
         _;
     }
-    /// @custom:oz-upgrades-unsafe-allow constructor
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
