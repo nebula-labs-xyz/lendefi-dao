@@ -37,6 +37,18 @@ contract LendefiGovernor is
     UUPSUpgradeable
 {
     /**
+     * @notice Structure to store pending upgrade details
+     * @param implementation Address of the new implementation contract
+     * @param scheduledTime Timestamp when the upgrade was scheduled
+     * @param exists Boolean flag indicating if an upgrade is currently scheduled
+     */
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
+
+    /**
      * @dev Role identifier for addresses that can upgrade the contract
      * @custom:security Should be granted carefully as this is a critical permission
      */
@@ -72,18 +84,6 @@ contract LendefiGovernor is
      * @dev Incremented with each upgrade to track contract versions
      */
     uint32 public uupsVersion;
-
-    /**
-     * @notice Structure to store pending upgrade details
-     * @param implementation Address of the new implementation contract
-     * @param scheduledTime Timestamp when the upgrade was scheduled
-     * @param exists Boolean flag indicating if an upgrade is currently scheduled
-     */
-    struct UpgradeRequest {
-        address implementation;
-        uint64 scheduledTime;
-        bool exists;
-    }
 
     /**
      * @notice Information about the currently pending upgrade
@@ -227,6 +227,17 @@ contract LendefiGovernor is
     }
 
     // The following functions are overrides required by Solidity.
+
+    /// @inheritdoc GovernorUpgradeable
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(GovernorUpgradeable, AccessControlUpgradeable)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+
     /// @inheritdoc GovernorUpgradeable
     function votingDelay() public view override(GovernorUpgradeable, GovernorSettingsUpgradeable) returns (uint256) {
         return super.votingDelay();
@@ -309,26 +320,6 @@ contract LendefiGovernor is
         return super._cancel(targets, values, calldatas, descriptionHash);
     }
 
-    /// @inheritdoc GovernorUpgradeable
-    function _executor()
-        internal
-        view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
-        returns (address)
-    {
-        return super._executor();
-    }
-
-    /// @inheritdoc GovernorUpgradeable
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(GovernorUpgradeable, AccessControlUpgradeable)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
-    }
-
     /// @inheritdoc UUPSUpgradeable
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
         if (!pendingUpgrade.exists) {
@@ -349,5 +340,15 @@ contract LendefiGovernor is
 
         ++uupsVersion;
         emit Upgrade(msg.sender, newImplementation);
+    }
+
+    /// @inheritdoc GovernorUpgradeable
+    function _executor()
+        internal
+        view
+        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        returns (address)
+    {
+        return super._executor();
     }
 }
