@@ -31,6 +31,12 @@ contract GovernanceTokenV2 is
     ERC20VotesUpgradeable,
     UUPSUpgradeable
 {
+    /// @dev Upgrade timelock storage
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
     // ============ Constants ============
 
     /// @notice Token supply and distribution constants
@@ -60,13 +66,6 @@ contract GovernanceTokenV2 is
     uint32 public version;
     /// @dev tge initialized variable
     uint32 public tge;
-
-    /// @dev Upgrade timelock storage
-    struct UpgradeRequest {
-        address implementation;
-        uint64 scheduledTime;
-        bool exists;
-    }
 
     UpgradeRequest public pendingUpgrade;
 
@@ -182,8 +181,8 @@ contract GovernanceTokenV2 is
         if (addr == address(0)) revert ZeroAddress();
         _;
     }
-    /// @custom:oz-upgrades-unsafe-allow constructor
 
+    /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();
     }
