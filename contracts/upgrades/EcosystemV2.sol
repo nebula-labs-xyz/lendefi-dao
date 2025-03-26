@@ -119,7 +119,6 @@ contract EcosystemV2 is
     receive() external payable {
         revert ValidationFailed("NO_ETHER_ACCEPTED");
     }
-
     /**
      * @notice Initializes the Ecosystem contract with core dependencies and configurations
      * @dev Sets up the contract with initial token allocations, roles, and limits
@@ -142,6 +141,7 @@ contract EcosystemV2 is
      * @custom:events-emits {Initialized} when initialization is complete
      * @custom:throws ZeroAddressDetected if any input address is zero
      */
+
     function initialize(address token, address timelockAddr, address multisig) external initializer {
         if (token == address(0) || timelockAddr == address(0) || multisig == address(0)) {
             revert ZeroAddressDetected();
@@ -221,16 +221,6 @@ contract EcosystemV2 is
         pendingUpgrade = UpgradeRequest({implementation: newImplementation, scheduledTime: currentTime, exists: true});
 
         emit UpgradeScheduled(msg.sender, newImplementation, currentTime, effectiveTime);
-    }
-
-    /**
-     * @dev Returns the remaining time before a scheduled upgrade can be executed
-     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
-     */
-    function upgradeTimelockRemaining() external view returns (uint256) {
-        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
-            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
-            : 0;
     }
 
     /**
@@ -559,6 +549,15 @@ contract EcosystemV2 is
     }
 
     // ============ View Functions ============
+    /**
+     * @dev Returns the remaining time before a scheduled upgrade can be executed
+     * @return The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
+     */
+    function upgradeTimelockRemaining() external view returns (uint256) {
+        return pendingUpgrade.exists && block.timestamp < pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION
+            ? pendingUpgrade.scheduledTime + UPGRADE_TIMELOCK_DURATION - block.timestamp
+            : 0;
+    }
 
     /**
      * @dev Returns the effective available reward supply considering burns.
