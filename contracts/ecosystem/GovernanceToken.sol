@@ -31,6 +31,12 @@ contract GovernanceToken is
     ERC20VotesUpgradeable,
     UUPSUpgradeable
 {
+    /// @dev Upgrade timelock storage
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
     // ============ Constants ============
 
     /// @notice Token supply and distribution constants
@@ -60,13 +66,6 @@ contract GovernanceToken is
     uint32 public version;
     /// @dev tge initialized variable
     uint32 public tge;
-
-    /// @dev Upgrade timelock storage
-    struct UpgradeRequest {
-        address implementation;
-        uint64 scheduledTime;
-        bool exists;
-    }
 
     UpgradeRequest public pendingUpgrade;
 
