@@ -8,17 +8,23 @@ pragma solidity 0.8.23;
  */
 
 interface ITEAMMANAGER {
-    /// @dev Upgrade timelock storage
+    /**
+     * @notice Upgrade request details
+     * @dev Tracks pending contract upgrades with timelock
+     * @param implementation New implementation contract address
+     * @param scheduledTime When the upgrade was requested
+     * @param exists Whether this upgrade request is active
+     */
     struct UpgradeRequest {
         address implementation;
         uint64 scheduledTime;
         bool exists;
     }
+
     /**
      * @dev Initialized Event.
      * @param src sender address
      */
-
     event Initialized(address indexed src);
 
     /**
