@@ -37,6 +37,18 @@ contract LendefiGovernorV2 is
     UUPSUpgradeable
 {
     /**
+     * @notice Structure to store pending upgrade details
+     * @param implementation Address of the new implementation contract
+     * @param scheduledTime Timestamp when the upgrade was scheduled
+     * @param exists Boolean flag indicating if an upgrade is currently scheduled
+     */
+    struct UpgradeRequest {
+        address implementation;
+        uint64 scheduledTime;
+        bool exists;
+    }
+
+    /**
      * @dev Role identifier for addresses that can upgrade the contract
      * @custom:security Should be granted carefully as this is a critical permission
      */
@@ -74,18 +86,6 @@ contract LendefiGovernorV2 is
     uint32 public uupsVersion;
 
     /**
-     * @notice Structure to store pending upgrade details
-     * @param implementation Address of the new implementation contract
-     * @param scheduledTime Timestamp when the upgrade was scheduled
-     * @param exists Boolean flag indicating if an upgrade is currently scheduled
-     */
-    struct UpgradeRequest {
-        address implementation;
-        uint64 scheduledTime;
-        bool exists;
-    }
-
-    /**
      * @notice Information about the currently pending upgrade
      * @dev Will have exists=false if no upgrade is pending
      */
@@ -120,6 +120,13 @@ contract LendefiGovernorV2 is
     event UpgradeScheduled(
         address indexed scheduler, address indexed implementation, uint64 scheduledTime, uint64 effectiveTime
     );
+
+    /**
+     * @notice Emitted when a scheduled upgrade is cancelled
+     * @param canceller The address that cancelled the upgrade
+     * @param implementation The implementation address that was cancelled
+     */
+    event UpgradeCancelled(address indexed canceller, address indexed implementation);
 
     /**
      * @notice Error thrown when a zero address is provided
@@ -197,6 +204,19 @@ contract LendefiGovernorV2 is
     }
 
     /**
+     * @notice Cancels a previously scheduled upgrade
+     * @dev Only callable by addresses with UPGRADER_ROLE
+     */
+    function cancelUpgrade() external onlyRole(UPGRADER_ROLE) {
+        if (!pendingUpgrade.exists) {
+            revert UpgradeNotScheduled();
+        }
+        address implementation = pendingUpgrade.implementation;
+        delete pendingUpgrade;
+        emit UpgradeCancelled(msg.sender, implementation);
+    }
+
+    /**
      * @notice Returns the remaining time before a scheduled upgrade can be executed
      * @return timeRemaining The time remaining in seconds, or 0 if no upgrade is scheduled or timelock has passed
      */
@@ -207,6 +227,17 @@ contract LendefiGovernorV2 is
     }
 
     // The following functions are overrides required by Solidity.
+
+    /// @inheritdoc GovernorUpgradeable
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(GovernorUpgradeable, AccessControlUpgradeable)
+        returns (bool)
+    {
+        return super.supportsInterface(interfaceId);
+    }
+
     /// @inheritdoc GovernorUpgradeable
     function votingDelay() public view override(GovernorUpgradeable, GovernorSettingsUpgradeable) returns (uint256) {
         return super.votingDelay();
@@ -289,26 +320,6 @@ contract LendefiGovernorV2 is
         return super._cancel(targets, values, calldatas, descriptionHash);
     }
 
-    /// @inheritdoc GovernorUpgradeable
-    function _executor()
-        internal
-        view
-        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
-        returns (address)
-    {
-        return super._executor();
-    }
-
-    /// @inheritdoc GovernorUpgradeable
-    function supportsInterface(bytes4 interfaceId)
-        public
-        view
-        override(GovernorUpgradeable, AccessControlUpgradeable)
-        returns (bool)
-    {
-        return super.supportsInterface(interfaceId);
-    }
-
     /// @inheritdoc UUPSUpgradeable
     function _authorizeUpgrade(address newImplementation) internal override onlyRole(UPGRADER_ROLE) {
         if (!pendingUpgrade.exists) {
@@ -329,5 +340,15 @@ contract LendefiGovernorV2 is
 
         ++uupsVersion;
         emit Upgrade(msg.sender, newImplementation);
+    }
+
+    /// @inheritdoc GovernorUpgradeable
+    function _executor()
+        internal
+        view
+        override(GovernorUpgradeable, GovernorTimelockControlUpgradeable)
+        returns (address)
+    {
+        return super._executor();
     }
 }
