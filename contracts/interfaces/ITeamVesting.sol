@@ -21,6 +21,11 @@ interface ITEAMVESTING {
 
     /**
      * @dev Contract initialization event
+     * @param token Address of the vested token contract
+     * @param beneficiary Address that will receive the vested tokens
+     * @param timelock Address of the timelock contract that can cancel vesting
+     * @param startTimestamp Unix timestamp when vesting begins
+     * @param duration Length of the vesting period in seconds
      */
     event VestingInitialized(
         address indexed token,
@@ -29,11 +34,11 @@ interface ITEAMVESTING {
         uint64 startTimestamp,
         uint64 duration
     );
+
     /**
      * @notice Error thrown when an unauthorized address attempts a restricted action
      * @dev Used to restrict functions that should only be callable by the contract creator
      */
-
     error Unauthorized();
 
     /**
@@ -81,9 +86,10 @@ interface ITEAMVESTING {
 
     /**
      * @dev Release the tokens that have already vested.
+     * @notice Cancels the vesting contract and refunds remaining tokens
+     * @return remainder Amount of tokens returned to the timelock
      *
      * Emits a {ERC20Released} event.
-     *
      * Refund the remainder to the timelock
      */
     function cancelContract() external returns (uint256 remainder);
